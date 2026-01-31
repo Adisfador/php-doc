@@ -35,8 +35,8 @@
 **В реальности:**
 - Partition (разделение сети) неизбежно в распределенных системах
 - Выбор всегда между **CP** или **AP**
-- SQL обычно **CP** (eventual consistency через репликацию)
-- NoSQL часто **AP** с eventual consistency
+- SQL обычно **CP** (синхронная/асинхронная репликация)
+- NoSQL делится: **CP** (MongoDB, HBase, Redis Cluster) и **AP** (Cassandra, DynamoDB) с eventual consistency
 
 ---
 
