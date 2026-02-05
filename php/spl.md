@@ -317,6 +317,7 @@ class UndoManager {
     public function undo(): void {
         if (!$this->undoStack->isEmpty()) {
             $action = $this->undoStack->pop();
+            $action();
             // отменить действие
         }
     }

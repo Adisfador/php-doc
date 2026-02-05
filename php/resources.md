@@ -4,6 +4,8 @@
 
 https://www.youtube.com/watch?v=DgktOsyDQFM&list=PLMXrPtW7QRZzZyzaubdK89E7XoUk9JrGv - лист видео с углублением по темам массивы php, магия, замыкания, итераторы , fiber и тд
 
+https://www.youtube.com/watch?v=ihmbnv22Cl4 - zend engine deep dive
+
 ---
 
 ## 📖 Дополнительно

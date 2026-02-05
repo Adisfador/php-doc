@@ -93,7 +93,7 @@ echo add(5.9, 10.1);  // TypeError: Argument #1 must be of type int, float given
 
 **1. Per-file, не глобально:**
 ```php
-// file1.php
+// strict-library.php
 <?php
 declare(strict_types=1);
 
@@ -101,13 +101,15 @@ function strict_add(int $a, int $b): int {
     return $a + $b;
 }
 
-// file2.php
+strict_add("5", 10);  // TypeError! (вызов ВНУТРИ strict файла)
+
+// app.php
 <?php
 // НЕТ declare(strict_types=1)
 
-require 'file1.php';
+require 'strict-library.php';
 
-strict_add("5", 10);  // TypeError! (проверка в месте вызова)
+strict_add("5", 10);  // ✅ РАБОТАЕТ! "5" → 5 (вызов БЕЗ strict)
 ```
 
 **2. Влияет только на вызов функции, не на объявление:**
@@ -196,13 +198,38 @@ greet("John");  // "Hello, John!" ✅
 greet("");      // "Hello, !" ✅ (пустая строка разрешена)
 greet(null);    // TypeError
 
-// Для деньги ИСПОЛЬЗУЙ string, НЕ float!
+// ⚠️ Для денег ИСПОЛЬЗУЙ string + bcmath, НЕ float!
 class Money {
     public function __construct(
-        private string $amount,  // "123.45"
-        private string $currency // "USD"
+        private string $amount,   // "123.45"
+        private string $currency  // "USD"
     ) {}
+    
+    public function add(Money $other): Money {
+        if ($this->currency !== $other->currency) {
+            throw new InvalidArgumentException("Currency mismatch");
+        }
+        
+        // bcadd(string $left, string $right, int $scale): string
+        $sum = bcadd($this->amount, $other->amount, 2);
+        return new Money($sum, $this->currency);
+    }
+    
+    public function multiply(string $multiplier): Money {
+        // bcmul(string $left, string $right, int $scale): string
+        $result = bcmul($this->amount, $multiplier, 2);
+        return new Money($result, $this->currency);
+    }
 }
+
+// Использование:
+$price1 = new Money("10.50", "USD");
+$price2 = new Money("20.30", "USD");
+$total = $price1->add($price2);  // "30.80" ✅ (ТОЧНО!)
+
+// ❌ НИКОГДА так для денег:
+$wrong = 10.50 + 20.30;  // 30.8 или 30.799999999999997? (НЕТОЧНО!)
+$wrong = 0.1 + 0.2;      // 0.30000000000000004 (БАГ в вычислениях!)
 ```
 
 ### bool - булево значение
@@ -948,7 +975,302 @@ $users->add(new Post());  // ❌ PHPStan/Psalm error
 
 ---
 
-## 🎓 Best Practices для типизации
+## �️ Attributes (Атрибуты) - PHP 8.0+
+
+### Что такое Attributes
+
+**Attributes** - это структурированные метаданные, встроенные в код. В отличие от PHPDoc комментариев, атрибуты:
+- Часть синтаксиса PHP (не комментарии)
+- Доступны в runtime через Reflection API
+- Типизированы и валидируются PHP
+
+### Синтаксис
+
+```php
+// Синтаксис: #[AttributeName]
+#[Route('/users', methods: ['GET', 'POST'])]
+class UserController {
+    
+    #[Deprecated('Use newMethod() instead')]
+    #[Cache(ttl: 3600)]
+    public function oldMethod(): void {
+        // ...
+    }
+}
+```
+
+### Встроенные атрибуты PHP
+
+```php
+// #[Attribute] - объявляет класс как атрибут
+#[Attribute]
+class MyAttribute {
+    public function __construct(public string $value) {}
+}
+
+// #[Override] - PHP 8.3+ (проверка переопределения метода)
+class Parent {
+    public function method(): void {}
+}
+
+class Child extends Parent {
+    #[Override]  // Ошибка если метода нет в Parent
+    public function method(): void {}
+}
+
+// #[Deprecated] - PHP 8.4+ (помечает устаревший код)
+class Legacy {
+    #[Deprecated('Use newApi() instead', since: '2.0')]
+    public function oldApi(): void {}
+}
+
+// #[ReturnTypeWillChange] - для подавления warning при несовпадении типов
+class MyDateTime extends DateTime {
+    #[ReturnTypeWillChange]
+    public function modify($modify) {  // нет return type
+        return parent::modify($modify);
+    }
+}
+
+// #[SensitiveParameter] - PHP 8.2+ (скрывает значение в трейсах)
+function login(
+    string $username,
+    #[SensitiveParameter] string $password  // не будет в stack trace
+): void {
+    // ...
+}
+```
+
+### Создание своих атрибутов
+
+```php
+use Attribute;
+
+// 1. Простой атрибут
+#[Attribute]
+class Route {
+    public function __construct(
+        public string $path,
+        public array $methods = ['GET'],
+    ) {}
+}
+
+// Использование:
+#[Route('/api/users', methods: ['GET', 'POST'])]
+class UserController {}
+
+// 2. Атрибут с ограничениями (только для методов)
+#[Attribute(Attribute::TARGET_METHOD)]
+class Cache {
+    public function __construct(
+        public int $ttl = 3600,
+        public ?string $key = null,
+    ) {}
+}
+
+// Использование:
+class UserService {
+    #[Cache(ttl: 7200, key: 'user.{id}')]
+    public function find(int $id): ?User {
+        // ...
+    }
+}
+
+// 3. Повторяющийся атрибут (можно использовать несколько раз)
+#[Attribute(Attribute::TARGET_CLASS | Attribute::IS_REPEATABLE)]
+class Listener {
+    public function __construct(public string $event) {}
+}
+
+// Использование:
+#[Listener('user.created')]
+#[Listener('user.updated')]
+class UserNotifier {}
+```
+
+### Targets (цели применения)
+
+```php
+#[Attribute(Attribute::TARGET_CLASS)]          // только классы
+#[Attribute(Attribute::TARGET_METHOD)]         // только методы
+#[Attribute(Attribute::TARGET_PROPERTY)]       // только свойства
+#[Attribute(Attribute::TARGET_PARAMETER)]      // только параметры
+#[Attribute(Attribute::TARGET_FUNCTION)]       // только функции
+#[Attribute(Attribute::TARGET_CLASS_CONSTANT)] // только константы класса
+
+// Комбинация:
+#[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD)]
+
+// Все цели (по умолчанию):
+#[Attribute(Attribute::TARGET_ALL)]
+```
+
+### Чтение атрибутов через Reflection
+
+```php
+#[Route('/users')]
+class UserController {
+    #[Cache(ttl: 3600)]
+    public function index(): array {
+        return [];
+    }
+}
+
+// Чтение атрибутов класса:
+$reflectionClass = new ReflectionClass(UserController::class);
+$attributes = $reflectionClass->getAttributes(Route::class);
+
+foreach ($attributes as $attribute) {
+    $route = $attribute->newInstance();  // создает экземпляр Route
+    echo $route->path;  // "/users"
+}
+
+// Чтение атрибутов метода:
+$reflectionMethod = new ReflectionMethod(UserController::class, 'index');
+$attributes = $reflectionMethod->getAttributes(Cache::class);
+
+foreach ($attributes as $attribute) {
+    $cache = $attribute->newInstance();
+    echo $cache->ttl;  // 3600
+}
+
+// Получить ВСЕ атрибуты (без фильтра):
+$allAttributes = $reflectionMethod->getAttributes();
+```
+
+### Реальные примеры использования
+
+**1. Роутинг (как в Laravel/Symfony):**
+```php
+#[Attribute(Attribute::TARGET_METHOD)]
+class Route {
+    public function __construct(
+        public string $path,
+        public array $methods = ['GET'],
+        public ?string $name = null,
+    ) {}
+}
+
+class UserController {
+    #[Route('/users', methods: ['GET'], name: 'users.index')]
+    public function index(): array {
+        return User::all();
+    }
+    
+    #[Route('/users/{id}', methods: ['GET'], name: 'users.show')]
+    public function show(int $id): User {
+        return User::find($id);
+    }
+}
+```
+
+**2. Валидация:**
+```php
+#[Attribute(Attribute::TARGET_PROPERTY)]
+class Validate {
+    public function __construct(
+        public array $rules,
+    ) {}
+}
+
+class CreateUserRequest {
+    #[Validate(['required', 'string', 'max:255'])]
+    public string $name;
+    
+    #[Validate(['required', 'email', 'unique:users'])]
+    public string $email;
+    
+    #[Validate(['required', 'min:8'])]
+    public string $password;
+}
+```
+
+**3. Dependency Injection:**
+```php
+#[Attribute(Attribute::TARGET_PARAMETER)]
+class Inject {
+    public function __construct(public ?string $id = null) {}
+}
+
+class UserService {
+    public function __construct(
+        #[Inject('db.connection')] private ConnectionInterface $db,
+        #[Inject] private CacheInterface $cache,
+    ) {}
+}
+```
+
+**4. ORM Mapping:**
+```php
+#[Attribute(Attribute::TARGET_CLASS)]
+class Table {
+    public function __construct(public string $name) {}
+}
+
+#[Attribute(Attribute::TARGET_PROPERTY)]
+class Column {
+    public function __construct(
+        public ?string $name = null,
+        public string $type = 'string',
+    ) {}
+}
+
+#[Table('users')]
+class User {
+    #[Column(type: 'integer')]
+    public int $id;
+    
+    #[Column(name: 'full_name')]
+    public string $name;
+    
+    #[Column(type: 'datetime')]
+    public DateTime $createdAt;
+}
+```
+
+### PHPDoc vs Attributes - когда что использовать
+
+| PHPDoc | Attributes |
+|--------|------------|
+| `/** @param array<User> */` | `#[Route('/users')]` |
+| Только static analysis | Runtime доступ |
+| Типы для массивов/дженериков | Метаданные для фреймворков |
+| IDE autocomplete | Роутинг, DI, валидация |
+| Не проверяется PHP | Проверяется синтаксисом |
+
+**Используй PHPDoc для:**
+- Типов массивов: `@param array<int, User>`
+- Generics: `@template T`
+- Документации: `@see`, `@link`
+- Static analysis (PHPStan, Psalm)
+
+**Используй Attributes для:**
+- Роутинг: `#[Route('/api/users')]`
+- Валидация: `#[Validate(['required'])]`
+- DI: `#[Inject]`
+- ORM: `#[Table('users')]`
+- Конфигурация фреймворков
+
+### Комбинирование PHPDoc + Attributes
+
+```php
+class UserController {
+    /**
+     * Get all users
+     * 
+     * @return array<int, User>
+     */
+    #[Route('/users', methods: ['GET'])]
+    #[Cache(ttl: 300)]
+    public function index(): array {
+        return User::all();
+    }
+}
+```
+
+---
+
+## �🎓 Best Practices для типизации
 
 ### 1. Всегда используй strict_types
 

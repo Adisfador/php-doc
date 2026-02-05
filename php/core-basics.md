@@ -878,3 +878,274 @@ echo $config['db']; // 'mysql'
 ```
 
 **Правило:** Используй `require_once` для классов/библиотек, `include` для шаблонов.
+
+---
+
+## Исключения и ошибки
+
+### Иерархия Throwable (PHP 7.0+)
+
+```php
+// Throwable - корневой интерфейс (нельзя реализовать самостоятельно)
+interface Throwable {
+    public function getMessage(): string;
+    public function getCode(): int;
+    public function getFile(): string;
+    public function getLine(): int;
+    public function getTrace(): array;
+    public function getTraceAsString(): string;
+    public function getPrevious(): ?Throwable;
+}
+
+// Иерархия:
+Throwable
+├── Exception           // Пользовательские исключения
+│   ├── ErrorException  // Обёртка для PHP warnings/notices
+│   └── [SPL Exceptions] // см. spl.md
+└── Error              // Ошибки движка PHP
+    ├── TypeError
+    ├── ParseError
+    ├── ArithmeticError
+    │   └── DivisionByZeroError
+    ├── CompileError
+    ├── ArgumentCountError
+    ├── ValueError
+    ├── UnhandledMatchError
+    └── AssertionError
+```
+
+### Error - ошибки движка
+
+```php
+// TypeError - неверный тип аргумента/возврата
+function add(int $a, int $b): int {
+    return $a + $b;
+}
+
+add(5, "10");  // TypeError: Argument #2 must be of type int, string given
+
+// ValueError - корректный тип, но неверное значение (PHP 8.0+)
+function setAge(int $age): void {
+    if ($age < 0 || $age > 150) {
+        throw new ValueError('Age must be between 0 and 150');
+    }
+}
+
+setAge(-5);  // ValueError
+
+// ParseError - синтаксическая ошибка в eval/require
+eval('invalid php code');  // ParseError
+
+// ArithmeticError - математическая ошибка
+intdiv(10, 0);  // DivisionByZeroError (наследует ArithmeticError)
+
+// ArgumentCountError - неверное количество аргументов
+function test($a, $b) {}
+test(1);  // ArgumentCountError: Too few arguments
+
+// UnhandledMatchError - нет совпадений в match без default (PHP 8.0+)
+$value = 5;
+match ($value) {
+    1 => 'one',
+    2 => 'two',
+};  // UnhandledMatchError
+
+// CompileError - ошибка компиляции (редко в runtime)
+```
+
+### Try / Catch / Finally
+
+```php
+// Базовое использование
+try {
+    $result = divide(10, 0);
+} catch (DivisionByZeroError $e) {
+    echo "Cannot divide by zero: " . $e->getMessage();
+}
+
+// Множественные catch
+try {
+    riskyOperation();
+} catch (TypeError $e) {
+    echo "Type error: " . $e->getMessage();
+} catch (ValueError $e) {
+    echo "Value error: " . $e->getMessage();
+} catch (Exception $e) {
+    echo "General error: " . $e->getMessage();
+}
+
+// Catch нескольких типов (PHP 7.1+)
+try {
+    operation();
+} catch (TypeError | ValueError $e) {
+    echo "Type or value error: " . $e->getMessage();
+}
+
+// Finally - выполняется всегда
+try {
+    $file = fopen('data.txt', 'r');
+    processFile($file);
+} catch (Exception $e) {
+    echo "Error: " . $e->getMessage();
+} finally {
+    // Выполнится в любом случае
+    if (isset($file)) {
+        fclose($file);
+    }
+}
+
+// Поймать всё (PHP 7.0+)
+try {
+    anything();
+} catch (Throwable $t) {
+    // Поймает и Exception, и Error
+    echo $t->getMessage();
+}
+```
+
+### Создание и выброс исключений
+
+```php
+// Бросить исключение
+throw new Exception('Something went wrong');
+
+// С кодом ошибки
+throw new Exception('Database error', 500);
+
+// С предыдущим исключением (chain)
+try {
+    connectToDatabase();
+} catch (Exception $e) {
+    throw new Exception('Failed to connect', 0, $e);
+}
+
+// Получить цепочку
+catch (Exception $e) {
+    echo $e->getMessage();           // Текущее сообщение
+    echo $e->getPrevious()->getMessage(); // Предыдущее
+}
+```
+
+### Пользовательские исключения
+
+```php
+// Наследуем от Exception
+class ValidationException extends Exception {
+    private array $errors;
+    
+    public function __construct(array $errors, $code = 0, Throwable $previous = null) {
+        $this->errors = $errors;
+        parent::__construct('Validation failed', $code, $previous);
+    }
+    
+    public function getErrors(): array {
+        return $this->errors;
+    }
+}
+
+// Использование
+try {
+    if (empty($email)) {
+        throw new ValidationException(['email' => 'Required']);
+    }
+} catch (ValidationException $e) {
+    print_r($e->getErrors());
+}
+
+// Иерархия для разных типов ошибок
+class AppException extends Exception {}
+class DatabaseException extends AppException {}
+class NetworkException extends AppException {}
+
+// Ловим группу
+try {
+    operation();
+} catch (AppException $e) {
+    // Поймает все типы AppException
+}
+```
+
+### SPL Exceptions
+
+PHP предоставляет специализированные SPL-исключения для типичных ситуаций. **Подробно описаны в [spl.md](spl.md)**.
+
+Краткий список:
+
+**LogicException** - ошибки логики программы (должны быть исправлены в коде):
+- `InvalidArgumentException` - неверный аргумент (самое частое!)
+- `DomainException` - значение вне допустимой области
+- `LengthException` - неверная длина
+- `OutOfRangeException` - индекс вне диапазона
+- `BadFunctionCallException` / `BadMethodCallException`
+
+**RuntimeException** - ошибки времени выполнения:
+- `UnexpectedValueException` - неожиданное значение
+- `OutOfBoundsException` - индекс вне границ
+- `OverflowException` / `UnderflowException`
+- `RangeException` - арифметическое значение вне диапазона
+
+```php
+// Примеры использования
+function divide(int $a, int $b): float {
+    if ($b === 0) {
+        throw new InvalidArgumentException('Division by zero');
+    }
+    return $a / $b;
+}
+
+class Email {
+    public function __construct(private string $email) {
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw new DomainException('Invalid email format');
+        }
+    }
+}
+```
+
+### Best Practices
+
+```php
+// ✅ Используй специфичные исключения
+throw new InvalidArgumentException('ID required');
+
+// ❌ Не используй общий Exception
+throw new Exception('ID required');
+
+// ✅ Ловить конкретные типы
+try {
+    operation();
+} catch (InvalidArgumentException $e) {
+    // Конкретная обработка
+} catch (Exception $e) {
+    // Общая обработка
+}
+
+// ❌ Не ловить всё подряд
+try {
+    operation();
+} catch (Exception $e) {
+    // Потеряна информация о типе ошибки
+}
+
+// ✅ Использовать finally для cleanup
+try {
+    $lock = acquireLock();
+} finally {
+    releaseLock($lock);  // Выполнится всегда
+}
+
+// ✅ Не глушить исключения
+try {
+    operation();
+} catch (Exception $e) {
+    // Хотя бы залогировать!
+    error_log($e->getMessage());
+}
+
+// ❌ Пустой catch - потеря информации
+try {
+    operation();
+} catch (Exception $e) {
+    // Молчит - плохая практика
+}
+```
