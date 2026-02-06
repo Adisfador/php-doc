@@ -17,7 +17,27 @@
 ## 🐘 PHP
 
 ### Темы для добавления:
-- [ ] 
+
+#### Критичные для Middle:
+- [ ] **Enums (PHP 8.1+)** - backed enums, unit enums, методы, cases, from/tryFrom
+- [ ] **DateTime & DateTimeImmutable** - работа с датами, timezones, DateInterval, DatePeriod, форматирование
+- [ ] **Regular Expressions** - preg_match, preg_replace, preg_match_all, patterns, modifiers, named groups, lookbehind/lookahead
+- [ ] **File Operations детально** - fopen/fread/fwrite/fclose, file_get_contents/file_put_contents с контекстом, file locking
+- [ ] **Sessions & Cookies** - session_start, session handlers (database, Redis), cookie parameters (httponly, secure, samesite), session security
+
+#### Важные для Senior:
+- [ ] **Fibers (PHP 8.1+)** - асинхронность, Fiber::suspend/resume, use cases
+- [ ] **HTTP Client** - curl (curl_init, setopt, exec), stream_context_create, Guzzle basics
+- [ ] **XML Processing** - SimpleXML, DOMDocument, XMLReader/XMLWriter для больших файлов
+- [ ] **JSON Processing** - json_encode/decode, JsonSerializable interface, JSON_THROW_ON_ERROR, json_validate (PHP 8.3)
+
+#### Можно добавить позже:
+- [ ] **Output Buffering** - ob_start, ob_get_clean, ob_flush, nested buffers
+- [ ] **Multibyte Strings** - mb_* functions, encodings (UTF-8, cp1251), mb_strlen vs strlen
+- [ ] **Advanced Magic Methods** - детальный разбор всех __method (__set_state, __debugInfo, __sleep/__wakeup)
+- [ ] **Memory Management** - reference counting, circular references, WeakReference vs WeakMap
+- [ ] **Error Handlers** - set_error_handler, set_exception_handler, register_shutdown_function
+- [ ] **FFI (Foreign Function Interface)** - вызов C библиотек из PHP
 
 ### Вопросы для изучения:
 - [ ] 
@@ -27,7 +47,35 @@
 ## 🔴 Laravel
 
 ### Темы для добавления:
-- [ ] 
+
+#### Критичные для Middle/Senior (приоритет 1):
+- [ ] **Blade Templates** - директивы (@if, @foreach, @include), компоненты (class-based, anonymous), slots, layouts, стеки (@push/@stack), Blade UI
+- [ ] **Collections** - методы map/filter/reduce/pluck/chunk/groupBy, lazy collections, higher order messages, макросы, when/unless
+- [ ] **Artisan Commands** - создание команд, аргументы/опции, интерактивность (ask, confirm, choice), прогресс-бары, таблицы
+- [ ] **Mail & Notifications** - Mailable (markdown/view), Notification channels (mail/database/slack/broadcast), on-demand notifications, queueing
+- [ ] **Task Scheduling** - scheduler (cron expressions), frequency, tasks, overlapping prevention, maintenance mode, webhooks
+- [ ] **Authentication & Authorization** - guards (session/token), gates, policies, middleware (auth/can), multi-auth, password confirmation
+- [ ] **API Resources** - JsonResource, ResourceCollection, conditional attributes, nested resources, pagination, wrapping
+- [ ] **File Storage** - filesystems config (local/public/s3), disk operations, streaming/chunked uploads, visibility, CDN integration
+
+#### Важные для Senior (приоритет 2):
+- [ ] **Localization (i18n)** - языковые файлы (PHP/JSON), trans() vs __(), pluralization, параметры, определение локали
+- [ ] **Pagination** - paginate() vs simplePaginate() vs cursorPaginate(), customization, appending query strings, JSON responses
+- [ ] **Sanctum** - API tokens (abilities/scopes), SPA authentication (CSRF), token expiration, mobile apps auth
+- [ ] **Telescope** - installation/config, debugging в dev окружении, watchers (queries/requests/exceptions/jobs/mail), filtering, tag
+- [ ] **Octane** - Swoole vs RoadRunner, performance benefits, tables/cache, concurrent tasks, intervals/ticks, dependency injection caveats
+
+#### Можно добавить позже (приоритет 3):
+- [ ] **Passport** - полноценный OAuth2 server, authorization code grant, client credentials, personal access tokens, scopes
+- [ ] **Socialite** - OAuth authentication provider (Google, GitHub, Facebook, Twitter), stateless auth
+- [ ] **Scout** - full-text search integration (Algolia/Meilisearch/Typesense), indexing, searching, pagination
+- [ ] **Dusk** - end-to-end browser testing, headless Chrome, page objects, assertions, continuous integration
+- [ ] **Vite** - modern asset bundling (замена Mix), HMR, CSS preprocessing, code splitting, production builds
+- [ ] **Pint** - opinionated code style fixer на базе PHP-CS-Fixer, Laravel style preset, configuration
+- [ ] **Sail** - Docker-based local development (MySQL/PostgreSQL/Redis/Mailhog/Selenium), customization, services
+- [ ] **Folio** - page-based routing (альтернатива классическому routing), route model binding, middleware
+- [ ] **Prompts** - красивые CLI prompts (text, password, select, multiselect, confirm, search, etc.)
+- [ ] **Reverb** - первопартийный WebSocket server от Laravel, scaling, channels, presence
 
 ### Вопросы для изучения:
 - [ ] 

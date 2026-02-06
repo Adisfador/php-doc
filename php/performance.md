@@ -297,28 +297,31 @@ foreach (getAllUsers() as $user) {
     processUser($user);
 }
 
-// ✅ Хорошо - yield по одной записи
+// ✅ Хорошо - по 1000 записей в памяти одновременно
 function getUsersGenerator(): \Generator {
     $offset = 0;
     $limit = 1000;
     
     while (true) {
+        // Загружаем batch из 1000 записей
         $users = DB::table('users')->offset($offset)->limit($limit)->get();
         
         if ($users->isEmpty()) {
             break;
         }
         
+        // Yield каждую запись из batch, затем загружаем следующие 1000
         foreach ($users as $user) {
             yield $user;
         }
         
         $offset += $limit;
     }
+    // В памяти максимум 1000 записей, а не все 1M
 }
 
 foreach (getUsersGenerator() as $user) {
-    processUser($user);  // Обрабатывает по 1000 за раз
+    processUser($user);  // Процессит по 1 записи, но грузит батчами по 1000
 }
 
 // ✅ Еще лучше - Laravel chunk
@@ -364,24 +367,30 @@ class UserRepository {
 // Объекты User остаются в памяти даже если больше не нужны
 
 // ✅ WeakMap автоматически очищает неиспользуемые объекты
-class UserRepository {
-    private WeakMap $cache;
+class ImageProcessor {
+    private WeakMap $processedImages;
     
     public function __construct() {
-        $this->cache = new WeakMap();
+        $this->processedImages = new WeakMap();
     }
     
-    public function find(int $id): User {
-        $key = (object)['id' => $id];
-        
-        if (!isset($this->cache[$key])) {
-            $user = User::query()->find($id);
-            $this->cache[$key] = $user;
+    public function process(Image $image) {
+        // Используем САМ объект как ключ
+        if (!isset($this->processedImages[$image])) {
+            $result = $this->heavyProcessing($image);
+            $this->processedImages[$image] = $result;
         }
         
-        return $this->cache[$key];
+        return $this->processedImages[$image];
     }
 }
+
+// Использование:
+$image = new Image('photo.jpg');
+$processor->process($image);  // Обрабатывает
+$processor->process($image);  // Берет из кэша (тот же объект!)
+
+unset($image);  // Когда Image удаляется → запись из WeakMap тоже удаляется
 ```
 
 ---

@@ -14,6 +14,7 @@
 - 🟡 [NoSQL базы данных](databases/nosql.md) - Redis, MongoDB, ClickHouse, Elasticsearch
 - 🟡 [NewSQL базы данных](databases/newsql.md) - CockroachDB, Google Spanner, YugabyteDB - SQL + горизонтальное масштабирование
 - 🟡 [Концепции БД](databases/concepts.md) - OLTP/OLAP, CAP теорема, репликация, шардирование
+- 🔴 [Нормализация БД](databases/normalization.md) - нормальные формы 1NF-6NF, BCNF, денормализация, практические примеры
 - 📚 [Обучающие ресурсы](databases/resources.md) - курсы, видео, книги по БД
 
 ---
@@ -23,6 +24,7 @@
 - 🔴 [ООП в PHP](php/oop.md) - классы, интерфейсы, трейты, магические методы, позднее статическое связывание
 - 🔴 [Типизация](php/types.md) - strict_types, type hints, union/intersection types, mixed, never
 - 🔴 [SPL (Standard PHP Library)](php/spl.md) - итераторы, структуры данных, исключения
+- 🔴 [Streams (Потоки)](php/streams.md) - stream wrappers, php://, фильтры, контексты, файлы
 - 🔴 [Внутреннее устройство](php/internals.md) - Zend Engine, OpCache, JIT, memory management
 - 🟢 [Composer и автозагрузка](php/composer.md) - PSR-4, версионирование, semver
 - 🔴 [PSR стандарты](php/psr-standards.md) - PSR-1, 2, 3, 4, 6, 7, 11, 12, 15, 18
