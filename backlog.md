@@ -19,25 +19,21 @@
 ### Темы для добавления:
 
 #### Критичные для Middle:
-- [ ] **Enums (PHP 8.1+)** - backed enums, unit enums, методы, cases, from/tryFrom
-- [ ] **DateTime & DateTimeImmutable** - работа с датами, timezones, DateInterval, DatePeriod, форматирование
-- [ ] **Regular Expressions** - preg_match, preg_replace, preg_match_all, patterns, modifiers, named groups, lookbehind/lookahead
-- [ ] **File Operations детально** - fopen/fread/fwrite/fclose, file_get_contents/file_put_contents с контекстом, file locking
-- [ ] **Sessions & Cookies** - session_start, session handlers (database, Redis), cookie parameters (httponly, secure, samesite), session security
+- [ ] **DateTime & DateTimeImmutable** → добавить в **core-basics.md** - работа с датами, timezones, DateInterval, DatePeriod, форматирование
+- [ ] **Regular Expressions** → добавить в **core-basics.md** - preg_match, preg_replace, preg_match_all, patterns, modifiers, named groups, lookbehind/lookahead
+- [ ] **File Operations детально** → добавить в **core-basics.md** - fopen/fread/fwrite/fclose, file_get_contents/file_put_contents с контекстом, file locking
 
 #### Важные для Senior:
-- [ ] **Fibers (PHP 8.1+)** - асинхронность, Fiber::suspend/resume, use cases
-- [ ] **HTTP Client** - curl (curl_init, setopt, exec), stream_context_create, Guzzle basics
-- [ ] **XML Processing** - SimpleXML, DOMDocument, XMLReader/XMLWriter для больших файлов
-- [ ] **JSON Processing** - json_encode/decode, JsonSerializable interface, JSON_THROW_ON_ERROR, json_validate (PHP 8.3)
+- [ ] **Fibers (PHP 8.1+)** → добавить в **internals.md** - асинхронность, Fiber::suspend/resume, use cases
+- [ ] **HTTP Client** → добавить в **core-basics.md** - curl (curl_init, setopt, exec), stream_context_create, Guzzle basics
+- [ ] **XML Processing** → добавить в **core-basics.md** - SimpleXML, DOMDocument, XMLReader/XMLWriter для больших файлов
+- [ ] **JSON Processing** → добавить в **core-basics.md** - json_encode/decode, JsonSerializable interface, JSON_THROW_ON_ERROR, json_validate (PHP 8.3)
 
 #### Можно добавить позже:
-- [ ] **Output Buffering** - ob_start, ob_get_clean, ob_flush, nested buffers
-- [ ] **Multibyte Strings** - mb_* functions, encodings (UTF-8, cp1251), mb_strlen vs strlen
-- [ ] **Advanced Magic Methods** - детальный разбор всех __method (__set_state, __debugInfo, __sleep/__wakeup)
-- [ ] **Memory Management** - reference counting, circular references, WeakReference vs WeakMap
-- [ ] **Error Handlers** - set_error_handler, set_exception_handler, register_shutdown_function
-- [ ] **FFI (Foreign Function Interface)** - вызов C библиотек из PHP
+- [ ] **Multibyte Strings** → добавить в **core-basics.md** - mb_* functions, encodings (UTF-8, cp1251), mb_strlen vs strlen, mb_convert_encoding
+- [ ] **Advanced Magic Methods** → дополнить **oop.md** - детальный разбор всех __method (__set_state, __debugInfo, __sleep/__wakeup, __serialize/__unserialize)
+- [ ] **Memory Management** → добавить в **internals.md** - reference counting, circular references, WeakReference vs WeakMap, gc_collect_cycles
+- [ ] **FFI (Foreign Function Interface)** → добавить в **internals.md** - вызов C библиотек из PHP, use cases
 
 ### Вопросы для изучения:
 - [ ] 

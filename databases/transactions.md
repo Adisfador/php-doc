@@ -414,3 +414,22 @@ ROLLBACK PREPARED 'trans_id';
 - Как работает deadlock detection?
 - Зачем нужны savepoints?
 - Что такое transaction ID wraparound в PostgreSQL?
+
+---
+
+## 🎓 Для собеседования: ключевые точки
+
+1. **ACID** - Atomicity (WAL), Consistency (constraints), Isolation (levels), Durability (fsync)
+2. **Уровни изоляции** - Read Uncommitted < Read Committed < Repeatable Read < Serializable
+3. **Аномалии** - Dirty Read, Non-Repeatable Read, Phantom Read, Lost Update, Write Skew
+4. **REPEATABLE READ различия** - PostgreSQL предотвращает phantom reads (MVCC), MySQL нет (next-key locks)
+5. **MVCC** - PostgreSQL: tuple versioning, MySQL: undo logs. Читатели не блокируют писателей
+6. **Pessimistic Locking** - FOR UPDATE/SHARE, блокируем сразу. SKIP LOCKED для очередей
+7. **Optimistic Locking** - version field, проверяем при сохранении. Для read-heavy
+8. **Deadlock** - упорядочивай доступ к ресурсам (всегда по возрастанию ID), timeout, retry
+9. **Serializable** - полная изоляция, serialization failure → retry логика обязательна
+10. **Write Skew** - две транзакции читают одно, пишут разное, нарушая бизнес-логику. Защита: Serializable или explicit locking
+11. **Savepoints** - частичный rollback (ROLLBACK TO sp1), полезно для nested transactions
+12. **Transaction ID wraparound** - PostgreSQL 32-bit TX ID → VACUUM prevent wraparound
+
+**Главное:** Понимай trade-off между isolation level и performance. Используй минимально необходимый уровень. Retry логика обязательна для Serializable.

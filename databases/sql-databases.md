@@ -1332,11 +1332,43 @@ UNLOCK TABLES;
 
 ---
 
-**Главное для собеседования:**
-1. **Понимай MVCC** в обоих (PostgreSQL tuple versioning, MySQL undo logs)
-2. **Знай различия в REPEATABLE READ** (PostgreSQL сильнее)
-3. **Window functions** - обязательны для Middle/Senior
-4. **JSON/JSONB** - популярны в современных проектах
-5. **Индексы** - B-Tree, GIN, BRIN, когда что использовать
-6. **EXPLAIN ANALYZE** - умей читать планы запросов
-7. **Транзакции и блокировки** - уровни изоляции, FOR UPDATE, SKIP LOCKED
+---
+
+## 🔥 Частые вопросы на собеседованиях
+
+**Q: Чем PostgreSQL JSONB отличается от MySQL JSON?**
+A: JSONB - бинарный формат, индексируется через GIN, операторы @>, ->, ->>, быстрее для запросов. MySQL JSON тоже бинарный с 5.7, но индексы только через generated columns.
+
+**Q: Как сделать UPSERT в PostgreSQL vs MySQL?**
+A: PostgreSQL - `ON CONFLICT DO UPDATE`, MySQL - `ON DUPLICATE KEY UPDATE`. PostgreSQL мощнее (можно указать конкретный constraint).
+
+**Q: Что такое RETURNING в PostgreSQL?**
+A: Возвращает вставленные/обновлённые данные (`RETURNING id, created_at`). В MySQL нет, используй `LAST_INSERT_ID()`.
+
+**Q: Зачем PostgreSQL нужен VACUUM, а MySQL нет?**
+A: PostgreSQL использует MVCC с tuple versioning (старые версии остаются). MySQL InnoDB использует undo logs + purge thread (автоматическая очистка).
+
+**Q: Чем REPEATABLE READ в PostgreSQL отличается от MySQL?**
+A: PostgreSQL предотвращает phantom reads на RR (благодаря MVCC), MySQL - нет (используется next-key locking, но не полная защита).
+
+**Q: Когда использовать PostgreSQL vs MySQL?**
+A: PostgreSQL - сложные запросы, JSON, full-text search, strict consistency. MySQL - простые CRUD, read-heavy, простота настройки, WordPress/легаси.
+
+---
+
+## 🎓 Для собеседования: ключевые точки
+
+1. **AUTO_INCREMENT** - PostgreSQL: SERIAL/IDENTITY, MySQL: AUTO_INCREMENT
+2. **MVCC** - PostgreSQL: tuple versioning + VACUUM, MySQL: undo logs + purge
+3. **JSON** - PostgreSQL: JSONB + GIN индексы, MySQL: JSON + generated columns
+4. **UPSERT** - PostgreSQL: ON CONFLICT, MySQL: ON DUPLICATE KEY  
+5. **RETURNING** - PostgreSQL: встроенный, MySQL: LAST_INSERT_ID()
+6. **Window Functions** - оба с 8.0+, PostgreSQL раньше (8.4)
+7. **Arrays** - PostgreSQL: native, MySQL: нет (используй JSON)
+8. **Full-Text Search** - PostgreSQL: мощный (tsvector), MySQL: базовый (FULLTEXT)
+9. **Partial Indexes** - PostgreSQL: да, MySQL: нет
+10. **REPEATABLE READ** - PostgreSQL: предотвращает phantom reads, MySQL: нет
+11. **Репликация** - PG: streaming/logical, MySQL: async/semi-sync/GTID
+12. **Storage Engine** - PostgreSQL: один, MySQL: InnoDB/MyISAM/Memory
+
+**Главное:** Понимай trade-offs между MVCC реализациями, знай когда выбрать какую БД, умей читать EXPLAIN ANALYZE.

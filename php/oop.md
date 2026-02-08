@@ -884,6 +884,466 @@ $service = new UserService(new MySQLDatabase());
 
 ---
 
+## Enums (Перечисления) - PHP 8.1+
+
+### Что такое Enums?
+
+**Enum** - это пользовательский тип, представляющий фиксированный набор возможных значений.
+
+**Преимущества:**
+- ✅ Типобезопасность (нельзя передать неверное значение)
+- ✅ Автокомплит в IDE
+- ✅ Рефакторинг безопасен
+- ✅ Самодокументируемый код
+
+### Pure Enums (Unit Enums)
+
+```php
+enum Status
+{
+    case Pending;
+    case Processing;
+    case Completed;
+    case Cancelled;
+}
+
+// Использование
+$status = Status::Pending;
+
+if ($status === Status::Pending) {
+    echo "Order is pending";
+}
+
+// Нельзя создать неверное значение
+$status = Status::Invalid;  // ❌ Fatal Error
+
+// ✅ vs константы класса
+class OldStatus {
+    const PENDING = 'pending';
+    const COMPLETED = 'completed';
+}
+$status = 'invalid';  // ❌ Компилятор не поймает ошибку!
+```
+
+### Backed Enums (со значениями)
+
+```php
+// String-backed enum
+enum Status: string
+{
+    case Pending = 'pending';
+    case Processing = 'processing';
+    case Completed = 'completed';
+    case Cancelled = 'cancelled';
+}
+
+// Int-backed enum
+enum Priority: int
+{
+    case Low = 1;
+    case Medium = 2;
+    case High = 3;
+    case Critical = 4;
+}
+
+// Получить значение
+$status = Status::Pending;
+echo $status->value;  // 'pending'
+
+$priority = Priority::High;
+echo $priority->value;  // 3
+
+// Создать из значения
+$status = Status::from('pending');  // Status::Pending
+
+// tryFrom - возвращает null если не найдено
+$status = Status::tryFrom('invalid');  // null
+$status = Status::from('invalid');     // ValueError
+
+// Полезно для БД
+$order->status = Status::Processing;
+$order->save();  // 'processing' в БД
+
+$order = Order::find(1);
+$status = Status::from($order->status);  // Status enum
+```
+
+### Методы в Enums
+
+```php
+enum Status: string
+{
+    case Pending = 'pending';
+    case Processing = 'processing';
+    case Completed = 'completed';
+    case Cancelled = 'cancelled';
+    
+    // Метод экземпляра
+    public function label(): string
+    {
+        return match($this) {
+            self::Pending => 'В ожидании',
+            self::Processing => 'В обработке',
+            self::Completed => 'Завершен',
+            self::Cancelled => 'Отменен',
+        };
+    }
+    
+    // Проверки
+    public function isFinished(): bool
+    {
+        return $this === self::Completed || $this === self::Cancelled;
+    }
+    
+    // Цвет для UI
+    public function color(): string
+    {
+        return match($this) {
+            self::Pending => 'yellow',
+            self::Processing => 'blue',
+            self::Completed => 'green',
+            self::Cancelled => 'red',
+        };
+    }
+}
+
+// Использование
+$status = Status::Processing;
+echo $status->label();  // 'В обработке'
+echo $status->color();  // 'blue'
+
+if ($status->isFinished()) {
+    echo "Order is finished";
+}
+```
+
+### Статические методы
+
+```php
+enum Status: string
+{
+    case Pending = 'pending';
+    case Completed = 'completed';
+    case Cancelled = 'cancelled';
+    
+    // Фабричные методы
+    public static function fromOrder(Order $order): self
+    {
+        if ($order->isPaid() && $order->isShipped()) {
+            return self::Completed;
+        }
+        
+        return self::Pending;
+    }
+    
+    // Группировка
+    public static function activeStatuses(): array
+    {
+        return [self::Pending, self::Processing];
+    }
+    
+    public static function finishedStatuses(): array
+    {
+        return [self::Completed, self::Cancelled];
+    }
+}
+
+// Использование
+$status = Status::fromOrder($order);
+$active = Status::activeStatuses();
+```
+
+### Получить все cases
+
+```php
+enum Status: string
+{
+    case Pending = 'pending';
+    case Processing = 'processing';
+    case Completed = 'completed';
+}
+
+// Все cases
+$all = Status::cases();
+// [Status::Pending, Status::Processing, Status::Completed]
+
+foreach (Status::cases() as $status) {
+    echo $status->name;   // 'Pending', 'Processing', ...
+    echo $status->value;  // 'pending', 'processing', ...
+}
+
+// Для формы выбора
+<select name="status">
+    @foreach(Status::cases() as $status)
+        <option value="{{ $status->value }}">
+            {{ $status->label() }}
+        </option>
+    @endforeach
+</select>
+```
+
+### Enum с интерфейсами
+
+```php
+interface HasColor
+{
+    public function color(): string;
+}
+
+enum Status: string implements HasColor
+{
+    case Pending = 'pending';
+    case Processing = 'processing';
+    case Completed = 'completed';
+    
+    public function color(): string
+    {
+        return match($this) {
+            self::Pending => 'yellow',
+            self::Processing => 'blue',
+            self::Completed => 'green',
+        };
+    }
+}
+
+enum Priority: int implements HasColor
+{
+    case Low = 1;
+    case High = 2;
+    
+    public function color(): string
+    {
+        return $this === self::Low ? 'gray' : 'red';
+    }
+}
+
+// Одинаковый интерфейс для разных enums
+function renderBadge(HasColor $item): string
+{
+    return "<span style='color: {$item->color()}'>{$item->name}</span>";
+}
+```
+
+### Traits в Enums (PHP 8.2+)
+
+```php
+trait EnumHelpers
+{
+    public static function names(): array
+    {
+        return array_column(self::cases(), 'name');
+    }
+    
+    public static function values(): array
+    {
+        return array_column(self::cases(), 'value');
+    }
+}
+
+enum Status: string
+{
+    use EnumHelpers;
+    
+    case Pending = 'pending';
+    case Completed = 'completed';
+}
+
+$names = Status::names();    // ['Pending', 'Completed']
+$values = Status::values();  // ['pending', 'completed']
+```
+
+### Константы в Enums
+
+```php
+enum Status: string
+{
+    case Pending = 'pending';
+    case Completed = 'completed';
+    
+    // Константы (НЕ cases!)
+    public const DEFAULT = self::Pending;
+    public const TRANSITIONS = [
+        'pending' => ['completed', 'cancelled'],
+        'completed' => [],
+    ];
+    
+    public function canTransitionTo(self $newStatus): bool
+    {
+        $allowed = self::TRANSITIONS[$this->value] ?? [];
+        return in_array($newStatus->value, $allowed);
+    }
+}
+
+// Использование
+$status = Status::DEFAULT;  // Status::Pending
+
+if ($currentStatus->canTransitionTo(Status::Completed)) {
+    // Можно перейти
+}
+```
+
+### Сравнение с константами класса
+
+```php
+// ❌ Старый способ (константы)
+class Status {
+    const PENDING = 1;
+    const COMPLETED = 2;
+}
+
+function updateStatus(int $status) {
+    // Можно передать любое int значение!
+    if ($status === 999) {  // ❌ Невалидный статус, но компилятор не поймает
+        // ...
+    }
+}
+
+updateStatus(Status::PENDING);  // ✅
+updateStatus(999);  // ❌ Компилируется, но логически неверно!
+
+// ✅ Новый способ (enum)
+enum Status: int {
+    case Pending = 1;
+    case Completed = 2;
+}
+
+function updateStatus(Status $status) {
+    // Можно передать только валидный Status!
+}
+
+updateStatus(Status::Pending);  // ✅
+updateStatus(999);  // ❌ Fatal Error: невозможно передать int
+```
+
+### Практический пример: State Machine
+
+```php
+enum OrderStatus: string
+{
+    case Draft = 'draft';
+    case Pending = 'pending';
+    case Paid = 'paid';
+    case Shipped = 'shipped';
+    case Delivered = 'delivered';
+    case Cancelled = 'cancelled';
+    
+    public function transitions(): array
+    {
+        return match($this) {
+            self::Draft => [self::Pending, self::Cancelled],
+            self::Pending => [self::Paid, self::Cancelled],
+            self::Paid => [self::Shipped, self::Cancelled],
+            self::Shipped => [self::Delivered],
+            self::Delivered => [],
+            self::Cancelled => [],
+        };
+    }
+    
+    public function canTransitionTo(self $newStatus): bool
+    {
+        return in_array($newStatus, $this->transitions());
+    }
+    
+    public function transitionTo(self $newStatus): self
+    {
+        if (!$this->canTransitionTo($newStatus)) {
+            throw new InvalidArgumentException(
+                "Cannot transition from {$this->value} to {$newStatus->value}"
+            );
+        }
+        
+        return $newStatus;
+    }
+    
+    public function isActive(): bool
+    {
+        return !in_array($this, [self::Cancelled, self::Delivered]);
+    }
+}
+
+// Использование
+$order = new Order();
+$order->status = OrderStatus::Draft;
+
+// Переход по состояниям
+$order->status = $order->status->transitionTo(OrderStatus::Pending);
+$order->status = $order->status->transitionTo(OrderStatus::Paid);
+
+// ❌ Невозможный переход
+$order->status->transitionTo(OrderStatus::Delivered);  // Exception!
+```
+
+### Laravel Integration
+
+```php
+// Eloquent cast
+class Order extends Model
+{
+    protected $casts = [
+        'status' => Status::class,  // Автоматическое преобразование
+    ];
+}
+
+$order = Order::find(1);
+$order->status;  // Status enum, не string!
+$order->status = Status::Completed;
+$order->save();
+
+// Validation
+$request->validate([
+    'status' => ['required', new Enum(Status::class)],
+    // Или
+    'status' => ['required', Rule::enum(Status::class)],
+]);
+
+// Database query
+Order::where('status', Status::Pending)->get();
+```
+
+### Best Practices
+
+```php
+// ✅ Используй Backed Enums для БД
+enum Status: string {
+    case Pending = 'pending';  // Явное значение для БД
+}
+
+// ❌ Pure Enum сложнее хранить в БД
+enum Status {
+    case Pending;  // Как хранить в БД?
+}
+
+// ✅ Методы для логики
+enum Status: string {
+    case Pending = 'pending';
+    
+    public function canEdit(): bool {
+        return $this === self::Pending;
+    }
+}
+
+// ❌ Не дублировать логику вне enum
+if ($status->value === 'pending') {  // Дублирование!
+    // ...
+}
+
+// ✅ Используй match для маппинга
+public function label(): string {
+    return match($this) {
+        self::Pending => 'В ожидании',
+        self::Completed => 'Завершен',
+    };
+}
+
+// ❌ Не используй if/elseif
+public function label(): string {
+    if ($this === self::Pending) return 'В ожидании';
+    if ($this === self::Completed) return 'Завершен';
+}
+```
+
+---
+
 ## Ключевые вопросы для интервью
 
 - В чем разница между абстрактным классом и интерфейсом?
@@ -896,3 +1356,23 @@ $service = new UserService(new MySQLDatabase());
 - Композиция vs Наследование - когда что использовать?
 - Как работает __clone и зачем нужен deep clone?
 - Что такое Dependency Injection?
+
+---
+
+## 🎓 Для собеседования: ключевые точки
+
+1. **Абстрактный класс vs Интерфейс** - абстрактный может иметь состояние + реализацию, интерфейс - только контракт
+2. **Трейты** - повторное использование кода без наследования (horizontal reuse). Конфликты: insteadof/as
+3. **Late Static Binding** - static:: разрешается в runtime (на вызывающий класс), self:: в compile time
+4. **== vs ===** - == сравнивает свойства, === сравнивает ссылки (тот же объект?)
+5. **Магические методы** - __construct, __get/__set, __call/__callStatic, __toString, __invoke, __clone
+6. **Immutable объект** - readonly properties (PHP 8.1), нет setters, новый объект при изменении
+7. **Композиция > Наследование** - has-a vs is-a. Композиция более гибкая
+8. **Deep clone** - клонировать вложенные объекты через __clone, не только ссылки
+9. **Dependency Injection** - передача зависимостей через конструктор/сеттеры (не new внутри класса)
+10. **Visibility** - public (везде), protected (класс + наследники), private (только класс)
+11. **Constructor Property Promotion** - PHP 8.0+ краткий синтаксис для свойств
+12. **Полиморфизм** - единый интерфейс для разных реализаций (PaymentInterface)
+13. **Enums (PHP 8.1+)** - типобезопасные перечисления. Backed enums (со значениями), Pure enums, from/tryFrom, cases(), методы
+
+**Главное:** Предпочитай композицию наследованию, используй интерфейсы для контрактов, знай когда static:: vs self::, используй Enums вместо констант для фиксированных наборов значений.

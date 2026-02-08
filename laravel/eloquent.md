@@ -903,3 +903,22 @@ dd(DB::getQueryLog());
 $posts = Post::where('status', 'published')->explain();
 dd($posts);
 ```
+
+---
+
+## 🎓 Для собеседования: ключевые точки
+
+1. **Eloquent ORM** - Active Record pattern, модели = таблицы
+2. **Отношения** - hasOne/hasMany/belongsTo/belongsToMany/hasManyThrough/morphMany
+3. **Eager Loading** - with() избегает N+1 problem
+4. **Lazy Eager Loading** - load() после загрузки модели
+5. **Query Scopes** - local (scopeActive) vs global (GlobalScope)
+6. **Accessors/Mutators** - get{Attribute}Attribute, set{Attribute}Attribute, Attribute casting
+7. **Mass Assignment** - $fillable vs $guarded, защита от нежелательных полей
+8. **Soft Deletes** - SoftDeletes trait, deleted_at вместо физического удаления
+9. **Events** - creating/created/updating/updated/deleting/deleted, Observers
+10. **N+1 Problem** - найти: preventLazyLoading(), решить: with()
+11. **Chunk/Lazy** - для больших данных (не загружать всё в RAM)
+12. **Transactions** - DB::transaction(closure) для ACID
+
+**Главное:** Всегда with() для отношений, индексируй FK, используй chunk() для больших объёмов, preventLazyLoading() в dev.

@@ -1010,3 +1010,31 @@ ALTER TABLE mytable SET (
 - Чем отличается WAL в PostgreSQL от redo log в InnoDB?
 - Как PostgreSQL и InnoDB по-разному реализуют MVCC?
 - Почему в PostgreSQL нужен VACUUM, а в InnoDB - purge thread?
+
+---
+
+## 🎓 Для собеседования: ключевые точки
+
+**PostgreSQL:**
+1. **Page (страница) = 8KB** - header + items + free space + tuples
+2. **TOAST** - хранение больших значений (>2KB) отдельно
+3. **MVCC через tuple versioning** - UPDATE создаёт новую версию строки
+4. **VACUUM** - удаление мёртвых tuple, обновление FSM/VM
+5. **HOT Update** - обновление без новой версии индекса (если изменённые колонки не индексированы)
+6. **WAL (Write-Ahead Log)** - durability, все изменения сначала в WAL
+7. **FSM/VM** - Free Space Map, Visibility Map
+
+**InnoDB (MySQL):**
+1. **Page = 16KB** (по умолчанию) - header + records + free space
+2. **Clustered Index** - таблица = B-Tree индекс по PK
+3. **MVCC через undo logs** - старые версии в rollback segment
+4. **Redo log** - циклический журнал для crash recovery
+5. **Binlog** - логическая репликация, point-in-time recovery
+6. **Purge thread** - автоматическая очистка старых версий (нет VACUUM)
+7. **Adaptive Hash Index** - автоматический hash индекс для hot pages
+
+**Главное:**  
+- PostgreSQL UPDATE = новая tuple версия → VACUUM нужен
+- InnoDB UPDATE = undo log + in-place → purge thread очищает
+- WAL/redo log - для durability и crash recovery
+- Понимай как физически организованы данные для оптимизации запросов

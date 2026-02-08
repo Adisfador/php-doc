@@ -1270,6 +1270,510 @@ fclose($output);
 
 ---
 
+## 📤 Output Buffering (Буферизация вывода)
+
+### Что такое Output Buffer?
+
+**Output Buffer** - временное хранилище для вывода (echo, print, HTML) перед отправкой клиенту.
+
+**Зачем нужен:**
+- ✅ Изменить output перед отправкой
+- ✅ Установить headers после echo (обычно нельзя)
+- ✅ Захватить вывод функции в переменную
+- ✅ Сжатие output
+- ✅ Кэширование страниц
+
+**Как работает:**
+
+```
+┌─────────────────────────────────────────────────┐
+│  echo "Hello"                                   │
+│       ↓                                         │
+│  Output Buffer (если включен)                   │
+│       ↓                                         │
+│  Modification (callback)                        │
+│       ↓                                         │
+│  php://output stream                            │
+│       ↓                                         │
+│  Web Server → Browser                           │
+└─────────────────────────────────────────────────┘
+```
+
+### Базовые функции
+
+```php
+// Начать буферизацию
+ob_start();
+
+echo "Hello, ";
+echo "World!";
+
+// Получить содержимое буфера (не очищая)
+$content = ob_get_contents();  // "Hello, World!"
+
+// Получить и очистить буфер
+$content = ob_get_clean();  // "Hello, World!" + очистить буфер
+
+// Отправить буфер клиенту и очистить
+ob_end_flush();
+
+// Очистить буфер без отправки
+ob_end_clean();
+
+// Отправить содержимое буфера клиенту (не завершая буферизацию)
+ob_flush();
+flush();  // Отправить также системные буферы
+
+// Получить длину буфера
+$length = ob_get_length();
+
+// Получить статус всех буферов
+$status = ob_get_status(true);
+
+// Уровень вложенности буферов
+$level = ob_get_level();
+```
+
+### Практические примеры
+
+**1. Захват вывода в переменную**
+
+```php
+ob_start();
+
+include 'template.php';  // Выводит HTML
+$html = ob_get_clean();
+
+// Теперь можно обработать $html
+$html = str_replace('old', 'new', $html);
+echo $html;
+
+// Или сохранить в файл
+file_put_contents('cached.html', $html);
+```
+
+**2. Установка headers после echo**
+
+```php
+// ❌ Без буфера - ошибка
+echo "Some content";
+header('Location: /redirect');  // ❌ Cannot modify header information
+
+// ✅ С буфером
+ob_start();
+
+echo "Some content";
+header('Location: /redirect');  // ✅ Работает!
+
+ob_end_clean();  // Очистить вывод
+```
+
+**3. Модификация output через callback**
+
+```php
+// Callback вызывается при ob_end_flush() или конце скрипта
+ob_start(function($buffer) {
+    // Заменить плейсхолдеры
+    $buffer = str_replace('{YEAR}', date('Y'), $buffer);
+    
+    // Минификация HTML
+    $buffer = preg_replace('/\s+/', ' ', $buffer);
+    
+    return $buffer;
+});
+
+echo "<p>Copyright {YEAR}</p>";
+echo "<div>  Lots   of   spaces  </div>";
+
+ob_end_flush();
+
+// Output: <p>Copyright 2026</p> <div> Lots of spaces </div>
+```
+
+**4. Кэширование страницы**
+
+```php
+$cacheFile = 'cache/page.html';
+$cacheTime = 3600;  // 1 час
+
+// Проверка кэша
+if (file_exists($cacheFile) && time() - filemtime($cacheFile) < $cacheTime) {
+    readfile($cacheFile);
+    exit;
+}
+
+// Генерация страницы
+ob_start();
+
+include 'expensive-page.php';  // Тяжелая страница
+
+$content = ob_get_contents();
+
+// Сохранить в кэш
+file_put_contents($cacheFile, $content);
+
+ob_end_flush();  // Отправить клиенту
+```
+
+**5. Сжатие output (gzip)**
+
+```php
+// Включить zlib.output_compression в php.ini
+// Или программно:
+
+ob_start('ob_gzhandler');
+
+echo str_repeat("This is repeated text ", 1000);
+
+ob_end_flush();
+
+// Браузер получит сжатый контент (Content-Encoding: gzip)
+```
+
+**6. Захват вывода функции/класса**
+
+```php
+class Logger {
+    public function debug() {
+        echo "Debug info\n";
+        echo "More debug\n";
+    }
+}
+
+$logger = new Logger();
+
+ob_start();
+$logger->debug();
+$debugOutput = ob_get_clean();
+
+// Теперь можем логировать в файл вместо output
+file_put_contents('debug.log', $debugOutput, FILE_APPEND);
+```
+
+### Вложенные буферы (Nested Buffers)
+
+```php
+ob_start();  // Буфер 1
+echo "Level 1\n";
+
+    ob_start();  // Буфер 2
+    echo "Level 2\n";
+    
+        ob_start();  // Буфер 3
+        echo "Level 3\n";
+        $level3 = ob_get_clean();
+    
+    echo "Back to level 2: $level3";
+    $level2 = ob_get_clean();
+
+echo "Back to level 1: $level2";
+$level1 = ob_get_clean();
+
+echo $level1;
+
+// Output:
+// Level 1
+// Back to level 1: Level 2
+// Back to level 2: Level 3
+```
+
+**Практический пример: Layout системы**
+
+```php
+class View {
+    protected static $buffers = [];
+    
+    public static function startSection($name) {
+        self::$buffers[$name] = '';
+        ob_start();
+    }
+    
+    public static function endSection() {
+        $content = ob_get_clean();
+        $name = array_key_last(self::$buffers);
+        self::$buffers[$name] = $content;
+    }
+    
+    public static function section($name) {
+        return self::$buffers[$name] ?? '';
+    }
+}
+
+// В шаблоне content.php
+View::startSection('title');
+echo "Page Title";
+View::endSection();
+
+View::startSection('content');
+echo "<p>Page content here</p>";
+View::endSection();
+
+// В layout.php
+<!DOCTYPE html>
+<html>
+<head>
+    <title><?= View::section('title') ?></title>
+</head>
+<body>
+    <?= View::section('content') ?>
+</body>
+</html>
+```
+
+### Контроль уровня вложенности
+
+```php
+// Получить текущий уровень
+$level = ob_get_level();  // 0 если нет буферов
+
+// Очистить все буферы
+while (ob_get_level()) {
+    ob_end_clean();
+}
+
+// Отправить все буферы
+while (ob_get_level()) {
+    ob_end_flush();
+}
+```
+
+### Output Buffering в php.ini
+
+```ini
+; Автоматический старт буфера при запуске скрипта
+output_buffering = 4096  ; Размер буфера в байтах (или On)
+
+; Callback функция для обработки
+output_handler = "ob_gzhandler"  ; Авто-сжатие
+
+; Неявный flush после каждого output
+implicit_flush = Off  ; Рекомендуется Off
+```
+
+### CLI vs Web
+
+```php
+// В CLI ob_flush() работает сразу
+// В Web нужен еще flush() для отправки через FastCGI/Apache
+
+if (php_sapi_name() === 'cli') {
+    ob_implicit_flush(true);  // Автоматический flush в CLI
+}
+
+// Прогресс-бар в CLI
+for ($i = 1; $i <= 100; $i++) {
+    echo "\rProgress: $i%";
+    flush();  // Обновляет строку в терминале
+    usleep(50000);
+}
+```
+
+### Проблемы и решения
+
+**1. Headers already sent**
+
+```php
+// ❌ Проблема
+echo "Debug info";
+header('Content-Type: application/json');  // ❌ Error!
+
+// ✅ Решение 1: убрать echo
+// ✅ Решение 2: ob_start() в начале скрипта
+ob_start();
+echo "Debug info";
+ob_clean();  // Очистить debug вывод
+header('Content-Type: application/json');
+```
+
+**2. Пробелы до `<?php`**
+
+```php
+// file.php (есть пробел/перенос до <?php)
+   <?php
+   // ❌ Output уже начался!
+   
+// ✅ Решение: убрать пробелы/переносы до <?php
+<?php
+```
+
+**3. Большой output → много памяти**
+
+```php
+// ❌ Плохо: весь output в память
+ob_start();
+for ($i = 0; $i < 1000000; $i++) {
+    echo "Line $i\n";
+}
+$content = ob_get_clean();  // Огромная строка!
+
+// ✅ Хорошо: отправлять кусками
+for ($i = 0; $i < 1000000; $i++) {
+    echo "Line $i\n";
+    if ($i % 1000 === 0) {
+        flush();  // Отправить каждые 1000 строк
+    }
+}
+```
+
+**4. Вложенные буферы - забыли закрыть**
+
+```php
+ob_start();
+ob_start();
+// Забыли ob_end_*
+
+// ✅ Проверка
+if (ob_get_level() > 0) {
+    error_log("Unclosed output buffer!");
+}
+
+// ✅ Cleanup
+register_shutdown_function(function() {
+    while (ob_get_level()) {
+        ob_end_flush();
+    }
+});
+```
+
+### Отладка буферов
+
+```php
+// Полная информация о буферах
+$status = ob_get_status(true);
+print_r($status);
+
+/*
+Array (
+    [0] => Array (
+        [name] => default output handler
+        [type] => 0
+        [flags] => 112
+        [level] => 1
+        [chunk_size] => 4096
+        [buffer_size] => 8192
+        [buffer_used] => 256
+    )
+)
+*/
+
+// Для каждого уровня буфера
+foreach ($status as $buffer) {
+    echo "Level: {$buffer['level']}\n";
+    echo "Handler: {$buffer['name']}\n";
+    echo "Used: {$buffer['buffer_used']} bytes\n";
+}
+```
+
+### Laravel & Output Buffering
+
+```php
+// Laravel использует output buffering внутри для:
+// 1. Blade templates - компиляция и рендеринг
+// 2. view() helper - захват view output
+// 3. Response()->json() - очистка случайного output
+
+// Пример в контроллере
+public function index() {
+    // ❌ Случайный output
+    echo "Debug";
+    
+    // Laravel очистит buffer перед отправкой JSON
+    return response()->json(['data' => 'clean']);
+}
+
+// Middleware может обрабатывать output
+class MinifyHtml {
+    public function handle($request, Closure $next) {
+        $response = $next($request);
+        
+        if ($response instanceof Response) {
+            $content = $response->getContent();
+            $minified = preg_replace('/\s+/', ' ', $content);
+            $response->setContent($minified);
+        }
+        
+        return $response;
+    }
+}
+```
+
+### Best Practices
+
+```php
+// ✅ Используй ob_start() в начале скрипта для гибкости
+ob_start();
+
+// ✅ Всегда закрывай буферы (парные вызовы)
+ob_start();
+// ...
+ob_end_flush();  // или ob_end_clean()
+
+// ✅ Используй callback для обработки
+ob_start(function($buffer) {
+    return strtoupper($buffer);  // Всегда return!
+});
+
+// ❌ Не забывай return в callback
+ob_start(function($buffer) {
+    strtoupper($buffer);  // ❌ Нет return → пустой output!
+});
+
+// ✅ Проверяй уровень перед закрытием
+if (ob_get_level()) {
+    ob_end_flush();
+}
+
+// ✅ Cleanup в конце скрипта
+register_shutdown_function(function() {
+    while (ob_get_level()) {
+        ob_end_flush();
+    }
+});
+
+// ✅ Используй ob_get_clean() для захвата
+ob_start();
+generateOutput();
+$content = ob_get_clean();  // Не забудь присвоить!
+
+// ❌ Не используй output buffering для больших данных
+// Для стриминга больших файлов используй readfile() или потоки
+```
+
+### Производительность
+
+```php
+// Output buffering добавляет небольшой overhead
+// Но дает больше гибкости
+
+// ❌ Плохо: много мелких echo
+for ($i = 0; $i < 10000; $i++) {
+    echo "<li>Item $i</li>";
+}
+
+// ✅ Лучше: накопить в буфере
+ob_start();
+for ($i = 0; $i < 10000; $i++) {
+    echo "<li>Item $i</li>";
+}
+ob_end_flush();  // Одна отправка
+
+// ✅ Еще лучше: строка + одно echo
+$html = '';
+for ($i = 0; $i < 10000; $i++) {
+    $html .= "<li>Item $i</li>";
+}
+echo $html;
+
+// ✅ Идеально: array + implode
+$items = [];
+for ($i = 0; $i < 10000; $i++) {
+    $items[] = "<li>Item $i</li>";
+}
+echo implode('', $items);
+```
+
+---
+
 ## 🎓 Для собеседования: ключевые точки
 
 1. **Stream Wrappers** - `file://`, `http://`, `php://` - протоколы доступа к данным
@@ -1282,6 +1786,7 @@ fclose($output);
 8. **Custom Wrappers** - `stream_wrapper_register()`, реализация `stream_open/read/write`
 9. **Custom Filters** - `stream_filter_register()`, наследование `php_user_filter`
 10. **flock()** - блокировка файлов (LOCK_SH, LOCK_EX, LOCK_NB)
+11. **Output Buffering** - ob_start/ob_get_clean/ob_end_flush для захвата/модификации output, вложенные буферы, callback обработка
 
 ### ❓ Популярные вопросы на собеседованиях
 

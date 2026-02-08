@@ -504,3 +504,22 @@ Set-Cookie: session_id=abc123; HttpOnly; Secure
 - Чем отличается PUT от PATCH?
 - Какие уровни модели OSI вы знаете?
 
+---
+
+## 🎓 Для собеседования: ключевые точки
+
+1. **OSI Model** - 7 уровней: Physical, Data Link, Network, Transport, Session, Presentation, Application
+2. **TCP/IP Model** - 4 уровня: Link, Internet (IP), Transport (TCP/UDP), Application (HTTP)
+3. **TCP vs UDP** - TCP: надёжный, упорядоченный, handshake. UDP: быстрый, без гарантий
+4. **3-way handshake** - SYN → SYN-ACK → ACK (установка TCP соединения)
+5. **DNS** - рекурсивный резолвер, authoritative servers, A/AAAA/CNAME/MX records
+6. **HTTP** - stateless, headers, methods (GET/POST/PUT/DELETE), status codes (2xx/3xx/4xx/5xx)
+7. **HTTPS/TLS** - asymmetric (рукопожатие) + symmetric (данные), сертификаты
+8. **Idempotent** - можно повторять безопасно (GET, PUT, DELETE). POST - НЕ idempotent
+9. **PUT vs PATCH** - PUT полная замена, PATCH частичное обновление
+10. **301 vs 302** - 301 Permanent (cache), 302 Temporary (не cache)
+11. **Port numbers** - 80 (HTTP), 443 (HTTPS), 22 (SSH), 3306 (MySQL), 5432 (PostgreSQL)
+12. **WebSocket** - full-duplex, upgrade от HTTP, real-time
+
+**Главное:** Понимай разницу TCP/UDP, знай как работает DNS и HTTPS, HTTP methods и status codes - частые вопросы.
+

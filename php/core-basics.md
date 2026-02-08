@@ -1149,3 +1149,448 @@ try {
     // Молчит - плохая практика
 }
 ```
+
+---
+
+### Error Handlers (Обработчики ошибок)
+
+PHP позволяет перехватывать и обрабатывать ошибки, исключения и завершение скрипта.
+
+#### set_error_handler() - обработчик ошибок
+
+**Для чего:** Перехват ошибок (warnings, notices, deprecated) и их кастомная обработка.
+
+```php
+// Установка обработчика
+set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    $errorTypes = [
+        E_ERROR => 'ERROR',
+        E_WARNING => 'WARNING',
+        E_NOTICE => 'NOTICE',
+        E_DEPRECATED => 'DEPRECATED',
+        E_STRICT => 'STRICT',
+        E_USER_ERROR => 'USER_ERROR',
+        E_USER_WARNING => 'USER_WARNING',
+        E_USER_NOTICE => 'USER_NOTICE',
+    ];
+    
+    $type = $errorTypes[$errno] ?? 'UNKNOWN';
+    
+    error_log("[{$type}] {$errstr} in {$errfile} on line {$errline}");
+    
+    // true = ошибка обработана, false = передать в стандартный обработчик
+    return true;
+});
+
+// Теперь все ошибки логируются
+echo $undefinedVariable;  // Вызовет наш обработчик вместо стандартного warning
+
+// Восстановить стандартный обработчик
+restore_error_handler();
+```
+
+**Уровни ошибок:**
+
+```php
+// E_ERROR, E_PARSE, E_CORE_ERROR - НЕ перехватываются set_error_handler
+// Используй set_exception_handler или register_shutdown_function
+
+// E_WARNING - предупреждение (скрипт продолжает работу)
+fopen('nonexistent.txt', 'r');  // E_WARNING
+
+// E_NOTICE - уведомление (потенциальная проблема)
+echo $undefined;  // E_NOTICE
+
+// E_DEPRECATED - устаревшая фича
+// E_STRICT - рекомендации по совместимости (PHP 5.x)
+
+// E_USER_* - пользовательские ошибки
+trigger_error('Custom warning', E_USER_WARNING);
+trigger_error('Custom notice', E_USER_NOTICE);
+trigger_error('Custom error', E_USER_ERROR);  // Останавливает скрипт
+```
+
+**Конвертация ошибок в исключения:**
+
+```php
+set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    // Пропустить, если ошибка подавлена через @
+    if (!(error_reporting() & $errno)) {
+        return false;
+    }
+    
+    // Бросить исключение вместо warning/notice
+    throw new ErrorException($errstr, 0, $errno, $errfile, $errline);
+});
+
+try {
+    // Теперь warning станет исключением
+    $file = fopen('nonexistent.txt', 'r');
+} catch (ErrorException $e) {
+    echo "Caught: " . $e->getMessage();
+}
+```
+
+**Фильтрация по типу ошибки:**
+
+```php
+set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    // Логировать только warnings
+    if ($errno === E_WARNING) {
+        error_log("WARNING: $errstr");
+        return true;
+    }
+    
+    // Остальные ошибки - стандартному обработчику
+    return false;
+});
+
+// Или через второй параметр (битовая маска)
+set_error_handler($handler, E_WARNING | E_NOTICE);  // Только warnings и notices
+```
+
+#### set_exception_handler() - обработчик исключений
+
+**Для чего:** Перехват **неперехваченных** исключений (последняя линия защиты).
+
+```php
+set_exception_handler(function(Throwable $exception) {
+    error_log("Uncaught exception: " . $exception->getMessage());
+    error_log($exception->getTraceAsString());
+    
+    // В production - показать красивую страницу ошибки
+    if (!defined('DEBUG') || !DEBUG) {
+        http_response_code(500);
+        echo "Something went wrong. Please try again later.";
+    } else {
+        // В development - подробная информация
+        echo "<h1>Exception</h1>";
+        echo "<pre>" . $exception . "</pre>";
+    }
+    
+    exit(1);  // Завершить скрипт
+});
+
+// Бросаем исключение без try/catch
+throw new Exception('This will be caught by exception handler');
+```
+
+**Логирование в файл/Sentry:**
+
+```php
+set_exception_handler(function(Throwable $e) {
+    // Логирование в файл
+    $log = sprintf(
+        "[%s] %s: %s in %s:%d\nStack trace:\n%s\n\n",
+        date('Y-m-d H:i:s'),
+        get_class($e),
+        $e->getMessage(),
+        $e->getFile(),
+        $e->getLine(),
+        $e->getTraceAsString()
+    );
+    
+    file_put_contents('/var/log/php_errors.log', $log, FILE_APPEND);
+    
+    // Или отправить в Sentry/Bugsnag
+    // Sentry\captureException($e);
+    
+    // Показать пользователю
+    http_response_code(500);
+    include 'error-500.html';
+    exit;
+});
+```
+
+#### register_shutdown_function() - cleanup после завершения
+
+**Для чего:** Код, который выполнится **ВСЕГДА** в конце скрипта (даже при fatal error).
+
+```php
+register_shutdown_function(function() {
+    echo "This runs even on fatal error\n";
+    
+    // Проверить, была ли fatal error
+    $error = error_get_last();
+    
+    if ($error !== null && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
+        // Fatal error произошла!
+        error_log("Fatal error: {$error['message']} in {$error['file']}:{$error['line']}");
+        
+        // Показать страницу ошибки
+        http_response_code(500);
+        echo "Fatal error occurred. Please contact support.";
+    }
+});
+
+// Cleanup ресурсов
+register_shutdown_function(function() {
+    // Закрыть соединения
+    if (isset($db)) {
+        $db->close();
+    }
+    
+    // Удалить временные файлы
+    @unlink('/tmp/lockfile');
+    
+    // Логирование времени выполнения
+    $executionTime = microtime(true) - $_SERVER['REQUEST_TIME_FLOAT'];
+    error_log("Execution time: {$executionTime}s");
+});
+```
+
+**Перехват fatal errors:**
+
+```php
+// Fatal errors (E_ERROR) НЕ перехватываются set_error_handler
+// Но можно поймать через shutdown function
+
+register_shutdown_function(function() {
+    $error = error_get_last();
+    
+    if ($error !== null && $error['type'] === E_ERROR) {
+        // Fatal error!
+        $message = $error['message'];
+        $file = $error['file'];
+        $line = $error['line'];
+        
+        // Логировать
+        error_log("FATAL: $message in $file:$line");
+        
+        // Очистить output buffer (может содержать частичный вывод)
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+        
+        // Показать страницу ошибки
+        http_response_code(500);
+        include 'error-fatal.html';
+    }
+});
+
+// Этот код вызовет fatal error
+undefinedFunction();  // Будет перехвачен в shutdown function
+```
+
+#### Комплексная система обработки ошибок
+
+```php
+class ErrorHandler
+{
+    public static function register(): void
+    {
+        // 1. Конвертация ошибок в исключения
+        set_error_handler([self::class, 'handleError']);
+        
+        // 2. Обработка неперехваченных исключений
+        set_exception_handler([self::class, 'handleException']);
+        
+        // 3. Fatal errors + cleanup
+        register_shutdown_function([self::class, 'handleShutdown']);
+    }
+    
+    public static function handleError(
+        int $level,
+        string $message,
+        string $file = '',
+        int $line = 0
+    ): bool {
+        // Пропустить подавленные ошибки (@)
+        if (!(error_reporting() & $level)) {
+            return false;
+        }
+        
+        // Конвертировать в исключение
+        throw new ErrorException($message, 0, $level, $file, $line);
+    }
+    
+    public static function handleException(Throwable $e): void
+    {
+        self::logException($e);
+        self::renderException($e);
+        exit(1);
+    }
+    
+    public static function handleShutdown(): void
+    {
+        $error = error_get_last();
+        
+        if ($error !== null && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR])) {
+            // Создаем исключение из fatal error
+            $exception = new ErrorException(
+                $error['message'],
+                0,
+                $error['type'],
+                $error['file'],
+                $error['line']
+            );
+            
+            self::logException($exception);
+            self::renderException($exception);
+        }
+    }
+    
+    private static function logException(Throwable $e): void
+    {
+        $log = sprintf(
+            "[%s] %s: %s in %s:%d\n%s\n",
+            date('Y-m-d H:i:s'),
+            get_class($e),
+            $e->getMessage(),
+            $e->getFile(),
+            $e->getLine(),
+            $e->getTraceAsString()
+        );
+        
+        error_log($log);
+    }
+    
+    private static function renderException(Throwable $e): void
+    {
+        // Очистить output buffer
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+        
+        http_response_code(500);
+        
+        if (getenv('APP_ENV') === 'production') {
+            // Production: общее сообщение
+            include __DIR__ . '/views/error-500.php';
+        } else {
+            // Development: подробности
+            echo "<h1>" . get_class($e) . "</h1>";
+            echo "<p><strong>Message:</strong> {$e->getMessage()}</p>";
+            echo "<p><strong>File:</strong> {$e->getFile()}:{$e->getLine()}</p>";
+            echo "<pre>{$e->getTraceAsString()}</pre>";
+        }
+    }
+}
+
+// Регистрация в начале приложения
+ErrorHandler::register();
+```
+
+#### Laravel Error Handling
+
+Laravel уже имеет мощную систему обработки ошибок:
+
+```php
+// app/Exceptions/Handler.php
+
+class Handler extends ExceptionHandler
+{
+    // Исключения, которые НЕ логируются
+    protected $dontReport = [
+        \Illuminate\Auth\AuthenticationException::class,
+        \Illuminate\Validation\ValidationException::class,
+    ];
+    
+    // Кастомная логика логирования
+    public function report(Throwable $exception)
+    {
+        if ($exception instanceof CustomException) {
+            // Отправить в Sentry
+            if (app()->bound('sentry')) {
+                app('sentry')->captureException($exception);
+            }
+        }
+        
+        parent::report($exception);
+    }
+    
+    // Кастомный рендеринг
+    public function render($request, Throwable $exception)
+    {
+        // API запросы → JSON
+        if ($request->expectsJson()) {
+            return response()->json([
+                'error' => $exception->getMessage(),
+                'code' => $exception->getCode(),
+            ], 500);
+        }
+        
+        // Кастомная страница для конкретного исключения
+        if ($exception instanceof NotFoundException) {
+            return response()->view('errors.not-found', [], 404);
+        }
+        
+        return parent::render($request, $exception);
+    }
+}
+```
+
+#### Best Practices
+
+```php
+// ✅ Регистрируй обработчики в начале приложения
+// index.php или bootstrap файл
+ErrorHandler::register();
+
+// ✅ Логируй ВСЕ ошибки в production
+set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    error_log("[ERROR] $errstr in $errfile:$errline");
+    return true;
+});
+
+// ✅ Показывай детали только в development
+if (getenv('APP_ENV') !== 'production') {
+    ini_set('display_errors', '1');
+    error_reporting(E_ALL);
+} else {
+    ini_set('display_errors', '0');
+    error_reporting(E_ALL & ~E_DEPRECATED & ~E_STRICT);
+}
+
+// ✅ Используй shutdown function для cleanup
+register_shutdown_function(function() {
+    // Закрыть соединения, удалить lock файлы
+});
+
+// ✅ Конвертируй ошибки в исключения для единообразия
+set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    throw new ErrorException($errstr, 0, $errno, $errfile, $errline);
+});
+
+// ❌ НЕ подавляй ошибки через @
+@fopen('file.txt', 'r');  // Плохая практика
+
+// ✅ Обрабатывай явно
+try {
+    $file = fopen('file.txt', 'r');
+    if ($file === false) {
+        throw new RuntimeException('Cannot open file');
+    }
+} catch (Throwable $e) {
+    // Обработка
+}
+
+// ✅ Всегда очищай output buffer при ошибке
+register_shutdown_function(function() {
+    if (error_get_last()) {
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+    }
+});
+```
+
+---
+
+## 🎓 Для собеседования: ключевые точки
+
+1. **Scalar types (PHP 7.0+)** - int, float, string, bool, mixed (PHP 8.0+)
+2. **Type juggling vs strict_types** - declare(strict_types=1) для запрета coercion
+3. **Array** - индексированный/ассоциативный, array_* функции
+4. **Spread operator (...)** - array unpacking, функции с variadic параметрами
+5. **Spaceship operator (<=>)** - трехстороннее сравнение (-1, 0, 1)
+6. **Null coalescing (??, ??=)** - $var ?? 'default' вместо isset($var) ? $var : 'default'
+7. **String heredoc/nowdoc** - многострочные строки, nowdoc без интерполяции
+8. **Static variables** - сохраняются между вызовами функции
+9. **Variable scope** - global, local, static, superglobals ($_GET, $_POST)
+10. **Closures (anonymous functions)** - fn() => (arrow functions PHP 7.4+), use keyword
+11. **Match expression (PHP 8.0+)** - строгое сравнение (===), возвращает значение
+12. **Error handling** - try/catch/finally, специфичные exception types, Throwable (Exception + Error)
+13. **Error Handlers** - set_error_handler (преобразование ошибок в исключения), set_exception_handler (глобальный catch), register_shutdown_function (fatal errors + cleanup)
+
+**Главное:** Используй strict_types, типизируй всё, знай новые фичи PHP 8+ (особенно match, named arguments, attributes), всегда регистрируй error handlers для production.

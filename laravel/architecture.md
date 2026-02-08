@@ -247,6 +247,348 @@ app()->extend(PaymentGateway::class, function ($service, $app) {
 
 ---
 
+## Внутреннее устройство Service Container
+
+### Container - это singleton
+
+```php
+// Application наследуется от Container
+class Application extends Container implements ApplicationContract
+{
+    // Container сам по себе ВСЕГДА singleton!
+}
+
+// Поэтому всегда один и тот же объект:
+$app1 = app();
+$app2 = app();
+// $app1 === $app2 → true
+```
+
+### Все методы сводятся к `make()`
+
+```php
+// Внутри Laravel все эти вызовы идут через make():
+
+app(UserService::class)           // → $app->make(UserService::class)
+resolve(UserService::class)        // → $app->make(UserService::class)
+app()->make(UserService::class)    // → напрямую
+Cache::get('key')                  // → app()->make('cache')->get('key')
+```
+
+### bind() - три параметра
+
+```php
+// Сигнатура метода:
+public function bind($abstract, $concrete = null, $shared = false)
+
+// $abstract - что биндим (интерфейс, класс)
+// $concrete - на что биндим (реализация, closure)
+// $shared - singleton? (true/false)
+
+// Примеры:
+app()->bind(
+    LoggerInterface::class,    // $abstract - "ключ" в контейнере
+    FileLogger::class,         // $concrete - что создавать
+    false                      // $shared - каждый раз новый объект
+);
+
+app()->bind(
+    'cache',
+    function ($app) { return new CacheManager($app); },
+    true  // singleton!
+);
+```
+
+### singleton() - это bind() с $shared = true
+
+```php
+// Эти два вызова идентичны:
+app()->singleton(Database::class, fn() => new Database());
+
+app()->bind(Database::class, fn() => new Database(), true);
+//                                                      ↑
+//                                                   shared!
+```
+
+### Внутренняя структура хранения
+
+```php
+// Упрощенная версия Container:
+class Container
+{
+    // Биндинги (инструкции как создавать)
+    protected $bindings = [];
+    
+    // Готовые singleton объекты
+    protected $instances = [];
+    
+    // Aliases (короткие имена)
+    protected $aliases = [];
+    
+    public function bind($abstract, $concrete, $shared = false)
+    {
+        // Нормализуем $concrete
+        if (is_null($concrete)) {
+            $concrete = $abstract;
+        }
+        
+        if (!$concrete instanceof Closure) {
+            $concrete = function ($app) use ($concrete) {
+                return $app->build($concrete);
+            };
+        }
+        
+        // Сохраняем в массив
+        $this->bindings[$abstract] = [
+            'concrete' => $concrete,
+            'shared' => $shared
+        ];
+    }
+    
+    public function make($abstract)
+    {
+        // 1. Проверяем instances (singleton cache)
+        if (isset($this->instances[$abstract])) {
+            return $this->instances[$abstract];
+        }
+        
+        // 2. Получаем concrete из bindings
+        $concrete = $this->bindings[$abstract]['concrete'] ?? $abstract;
+        
+        // 3. Строим объект
+        if ($concrete instanceof Closure) {
+            $object = $concrete($this);
+        } else {
+            $object = $this->build($concrete);
+        }
+        
+        // 4. Если shared - кешируем
+        if ($this->bindings[$abstract]['shared'] ?? false) {
+            $this->instances[$abstract] = $object;
+        }
+        
+        return $object;
+    }
+    
+    public function build($concrete)
+    {
+        // Используем Reflection для auto-injection
+        $reflector = new ReflectionClass($concrete);
+        
+        if (!$reflector->isInstantiable()) {
+            throw new Exception("$concrete is not instantiable");
+        }
+        
+        $constructor = $reflector->getConstructor();
+        
+        if (is_null($constructor)) {
+            return new $concrete;
+        }
+        
+        // Получаем зависимости из конструктора
+        $dependencies = $constructor->getParameters();
+        $instances = [];
+        
+        foreach ($dependencies as $dependency) {
+            $type = $dependency->getType();
+            
+            if ($type instanceof ReflectionNamedType && !$type->isBuiltin()) {
+                // Рекурсивно resolve зависимости!
+                $instances[] = $this->make($type->getName());
+            } else {
+                // Не можем resolve - ошибка или default value
+                if ($dependency->isDefaultValueAvailable()) {
+                    $instances[] = $dependency->getDefaultValue();
+                } else {
+                    throw new Exception("Cannot resolve dependency");
+                }
+            }
+        }
+        
+        return $reflector->newInstanceArgs($instances);
+    }
+}
+```
+
+### Как хранятся данные в контейнере
+
+```php
+// После регистраций:
+app()->bind(LoggerInterface::class, FileLogger::class);
+app()->singleton(Database::class, fn() => new Database());
+app()->instance(Config::class, new Config());
+
+// Внутренняя структура:
+[
+    'bindings' => [
+        LoggerInterface::class => [
+            'concrete' => Closure,  // fn($app) => $app->build(FileLogger::class)
+            'shared' => false
+        ],
+        Database::class => [
+            'concrete' => Closure,  // fn() => new Database()
+            'shared' => true
+        ]
+    ],
+    
+    'instances' => [
+        // Config был добавлен через instance() - сразу готов
+        Config::class => Config {...}
+    ],
+    
+    'aliases' => [
+        'cache' => 'Illuminate\Cache\CacheManager',
+        'db' => 'Illuminate\Database\DatabaseManager'
+    ]
+]
+```
+
+### Процесс resolve (шаг за шагом)
+
+```php
+// Регистрация:
+app()->singleton(UserService::class, function ($app) {
+    return new UserService(
+        $app->make(UserRepository::class),
+        $app->make(Mailer::class)
+    );
+});
+
+app()->bind(UserRepository::class, EloquentUserRepository::class);
+app()->bind(Mailer::class, SmtpMailer::class);
+
+// Вызов:
+$service = app(UserService::class);
+
+// Что происходит:
+/*
+1. make(UserService::class)
+   ├─ Проверка instances → НЕТ
+   ├─ Получение concrete из bindings → Closure
+   ├─ Вызов Closure:
+   │  ├─ make(UserRepository::class)
+   │  │  ├─ Проверка instances → НЕТ
+   │  │  ├─ Получение concrete → EloquentUserRepository
+   │  │  ├─ build(EloquentUserRepository)
+   │  │  │  ├─ Reflection анализ конструктора
+   │  │  │  ├─ Нет зависимостей
+   │  │  │  └─ return new EloquentUserRepository()
+   │  │  └─ return объект (НЕ кешируется - bind, не singleton)
+   │  │
+   │  ├─ make(Mailer::class)
+   │  │  ├─ Проверка instances → НЕТ
+   │  │  ├─ Получение concrete → SmtpMailer
+   │  │  ├─ build(SmtpMailer)
+   │  │  │  └─ return new SmtpMailer()
+   │  │  └─ return объект (НЕ кешируется)
+   │  │
+   │  └─ return new UserService(repository, mailer)
+   │
+   ├─ shared = true → КЕШИРОВАТЬ
+   ├─ instances[UserService::class] = объект
+   └─ return объект
+*/
+```
+
+### Ключи в контейнере
+
+```php
+// Контейнер - это ассоциативный массив, ключи могут быть:
+
+// 1. Класс (FQCN)
+app()->bind(UserService::class, ...);
+// Ключ: 'App\Services\UserService'
+
+// 2. Интерфейс
+app()->bind(LoggerInterface::class, FileLogger::class);
+// Ключ: 'App\Contracts\LoggerInterface'
+
+// 3. Строка (alias)
+app()->bind('cache', ...);
+// Ключ: 'cache'
+
+// 4. Можно миксовать:
+app()->singleton('my.service', UserService::class);
+app()->alias('my.service', UserService::class);
+
+// Теперь оба работают:
+app('my.service')          // → UserService
+app(UserService::class)    // → UserService (тот же объект!)
+```
+
+### Практический пример - весь флоу
+
+```php
+// 1. РЕГИСТРАЦИЯ (в Service Provider)
+class AppServiceProvider extends ServiceProvider
+{
+    public function register()
+    {
+        $this->app->bind(
+            PaymentInterface::class,     // abstract (ключ)
+            StripePayment::class,        // concrete (что создавать)
+            false                        // shared (не singleton)
+        );
+        
+        // Внутри контейнера:
+        // bindings[PaymentInterface::class] = [
+        //     'concrete' => Closure(fn($app) => $app->build(StripePayment::class)),
+        //     'shared' => false
+        // ]
+    }
+}
+
+// 2. ИСПОЛЬЗОВАНИЕ
+class OrderController
+{
+    public function __construct(PaymentInterface $payment)
+    {
+        // Laravel делает:
+        // 1. Reflection на __construct
+        // 2. Видит PaymentInterface
+        // 3. $app->make(PaymentInterface::class)
+        // 4. Достает bindings[PaymentInterface::class]
+        // 5. Вызывает concrete closure
+        // 6. build(StripePayment::class)
+        // 7. return new StripePayment()
+        // 8. НЕ кеширует (shared = false)
+    }
+}
+
+// 3. ПОВТОРНЫЙ ВЫЗОВ
+$controller2 = app(OrderController::class);
+// Создастся НОВЫЙ StripePayment (потому что bind, не singleton)
+```
+
+### Почему это важно понимать
+
+**Performance:**
+```php
+// ❌ ПЛОХО: Каждый раз новое подключение к БД
+app()->bind(Database::class, fn() => new Database());
+
+// ✅ ХОРОШО: Переиспользуем одно подключение
+app()->singleton(Database::class, fn() => new Database());
+```
+
+**Memory:**
+```php
+// Singleton в instances → держит в памяти весь request
+app()->singleton(HugeService::class, ...);
+
+// bind → создается и GC может убрать после использования
+app()->bind(TemporaryService::class, ...);
+```
+
+**Testing:**
+```php
+// Можно подменить binding в тестах
+app()->bind(PaymentInterface::class, FakePayment::class);
+// Все последующие resolve получат FakePayment
+```
+
+---
+
 ## Service Providers
 
 ### Анатомия Service Provider
@@ -729,3 +1071,22 @@ php artisan optimize:clear
 - Как работает автоматический dependency injection?
 - Что такое deferred service providers и зачем они нужны?
 - Чем отличается contextual binding от обычного?
+
+---
+
+## 🎓 Для собеседования: ключевые точки
+
+1. **Request Lifecycle** - index.php → Kernel → ServiceProviders → Middleware → Router → Controller → Response
+2. **Service Container (IoC)** - Dependency Injection контейнер, автоматическое разрешение зависимостей
+3. **Binding types** - bind (каждый раз новый), singleton (один на app), scoped (один на request)
+4. **Service Providers** - register() (регистрация bindings), boot() (после всех register)
+5. **Facades** - статический proxy к Service Container (getFacadeAccessor())
+6. **Contracts** - интерфейсы Laravel (Illuminate\Contracts), loosely coupled
+7. **Middleware** - фильтры запросов (auth, rate limiting, cors), global vs route
+8. **Deferred Providers** - загружаются только когда нужны (скорость загрузки)
+9. **Auto-injection** - типизация в конструкторе/методе → автоматическое разрешение
+10. **Pipeline** - цепочка обработки (middleware используют pipeline)
+11. **Contextual Binding** - разные реализации для разных классов
+12. **App lifecycle** - bootstrap → providers register → providers boot → request handling
+
+**Главное:** Service Container - ядро Laravel. Понимай DI, когда bind vs singleton, используй Contracts для тестируемости.
