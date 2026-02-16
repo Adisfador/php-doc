@@ -45,12 +45,9 @@
 ### Темы для добавления:
 
 #### Критичные для Middle/Senior (приоритет 1):
-- [ ] **Blade Templates** - директивы (@if, @foreach, @include), компоненты (class-based, anonymous), slots, layouts, стеки (@push/@stack), Blade UI
-- [ ] **Collections** - методы map/filter/reduce/pluck/chunk/groupBy, lazy collections, higher order messages, макросы, when/unless
 - [ ] **Artisan Commands** - создание команд, аргументы/опции, интерактивность (ask, confirm, choice), прогресс-бары, таблицы
 - [ ] **Mail & Notifications** - Mailable (markdown/view), Notification channels (mail/database/slack/broadcast), on-demand notifications, queueing
 - [ ] **Task Scheduling** - scheduler (cron expressions), frequency, tasks, overlapping prevention, maintenance mode, webhooks
-- [ ] **Authentication & Authorization** - guards (session/token), gates, policies, middleware (auth/can), multi-auth, password confirmation
 - [ ] **API Resources** - JsonResource, ResourceCollection, conditional attributes, nested resources, pagination, wrapping
 - [ ] **File Storage** - filesystems config (local/public/s3), disk operations, streaming/chunked uploads, visibility, CDN integration
 
@@ -179,61 +176,22 @@
 ## 🚀 Roadmap для Meta (FAANG)
 
 ### System Design (КРИТИЧНО - 40% собеса)
-- [ ] **Load Balancing и масштабирование**
-  - Nginx upstream, health checks
-  - Cloud load balancers (AWS ALB/NLB, GCP LB)
-  - L4 vs L7 балансировка
-  - Sticky sessions, session affinity
-  - Horizontal vs Vertical scaling
-  - Stateless application design
-  - Auto-scaling strategies
-
-- [ ] **Caching strategies**
-  - Multi-layer caching (browser, CDN, application, database)
-  - Redis patterns (cache-aside, read-through, write-through, write-behind)
-  - Cache invalidation strategies
-  - Cache stampede problem
-  - Memcached vs Redis
-  - CDN (CloudFront, Cloudflare, Fastly)
-  - Edge caching
-
-- [ ] **Database Scaling**
-  - Sharding strategies (horizontal partitioning)
-  - Replication (master-slave, master-master)
-  - Read replicas
-  - Partitioning (range, hash, list)
-  - Consistent hashing
-  - Database federation
-  - CQRS (Command Query Responsibility Segregation)
-
-- [ ] **Message Queues и Event-Driven**
-  - RabbitMQ advanced patterns (work queues, pub/sub, routing, topics)
-  - Apache Kafka (topics, partitions, consumer groups, offset management)
+- [x] **Load Balancing и масштабирование** - реализовано в [system-design/scalability.md](system-design/scalability.md)
+- [x] **Caching strategies** - реализовано в [system-design/scalability.md](system-design/scalability.md)
+- [x] **Database Scaling** - реализовано в [system-design/scalability.md](system-design/scalability.md)
+- [ ] **Message Queues и Event-Driven** - частично в [messaging/](messaging/)
   - Event sourcing
   - Saga pattern для distributed transactions
-  - Dead Letter Queue (DLQ)
-  - Idempotency patterns
   - Exactly-once delivery
-
 - [ ] **Microservices Design**
   - Service decomposition strategies
   - API Gateway pattern
   - Service mesh (Istio, Linkerd концептуально)
-  - Inter-service communication (sync vs async)
   - Circuit breaker pattern
   - Service discovery
   - Distributed tracing
-  - Saga vs 2PC
-
-- [ ] **Rate Limiting и защита**
-  - Token bucket algorithm
-  - Leaky bucket algorithm
-  - Fixed window vs Sliding window
-  - Distributed rate limiting (Redis)
-  - DDoS protection
-  - API throttling
-
-- [ ] **Real-world System Design примеры**
+- [x] **Rate Limiting и защита** - реализовано в [system-design/scalability.md](system-design/scalability.md)
+- [ ] **Real-world System Design примеры** - создать [system-design/case-studies.md](system-design/case-studies.md)
   - Design Instagram/Facebook News Feed
   - Design WhatsApp/Messenger
   - Design Twitter timeline
@@ -241,9 +199,6 @@
   - Design Dropbox/Google Drive
   - Design YouTube/Netflix
   - Design Uber/Lyft
-  - Design notification system
-  - Design search autocomplete
-  - Design web crawler
 
 ### Distributed Systems (для Senior)
 - [ ] **CAP Theorem глубоко**

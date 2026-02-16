@@ -37,6 +37,9 @@
 ## 🔴 Laravel (deep dive)
 - 🔴 [Архитектура и жизненный цикл](laravel/architecture.md) - Request Lifecycle, Service Container, Service Providers
 - 🔴 [Основные компоненты](laravel/core-components.md) - Routing, Middleware, Controllers, Requests
+- 🔴 [Collections](laravel/collections.md) - Collection API, методы map/filter/pluck, lazy collections, higher order messages, macros
+- 🔴 [Blade Templates](laravel/blade.md) - шаблонизатор, директивы, компоненты, slots, layouts, формы
+- 🔴 [Authentication & Authorization](laravel/authentication.md) - Session auth, Sanctum API tokens, JWT, Guards, Policies, Gates
 - 🔴 [Eloquent ORM](laravel/eloquent.md) - модели, отношения, eager loading, N+1 problem
 - 🔴 [Database](laravel/database.md) - Query Builder, миграции, сиды, транзакции
 - 🔴 [Очереди и Jobs](laravel/queues.md) - queue workers, failed jobs, job batching
@@ -107,7 +110,8 @@
 
 ## 🧮 Алгоритмы и структуры данных
 - 🟢 [Big O и сложность](algorithms/complexity.md) - асимптотическая сложность, анализ алгоритмов
-- 🟡 [LeetCode паттерны](algorithms/patterns.md) - Two Pointers, Sliding Window, DFS/BFS, DP шаблоны
+- � [PHP Helper Functions](algorithms/php-helpers.md) - полезные встроенные функции, сортировки (usort, uasort), примеры для алгоритмов
+- �🟡 [LeetCode паттерны](algorithms/patterns.md) - Two Pointers, Sliding Window, DFS/BFS, DP шаблоны
 - 🟡 [Структуры данных](algorithms/data-structures.md) - Array, LinkedList, Tree, Graph, Heap на PHP
 - 📚 [Ресурсы для практики](algorithms/resources.md) - LeetCode, Blind 75, NeetCode 150, курсы
 
@@ -121,10 +125,17 @@
 
 ---
 
+## 🏗️ System Design и распределённые системы
+- 🔴 [Fundamentals](system-design/fundamentals.md) - CAP теорема, consistency models, ACID vs BASE, availability, latency vs throughput
+- 🔴 [Scalability](system-design/scalability.md) - load balancing, auto-scaling, caching layers, database scaling, CDN, connection pooling
+- 🔴 [Interview Guide](system-design/interview-guide.md) - framework REASCH, примеры систем, capacity estimations, trade-offs
+- 📚 [Обучающие ресурсы](system-design/resources.md) - книги, курсы, YouTube, платформы для практики
+
+---
+
 ## 📋 Чек-листы
 - [ ] [Middle Developer Checklist](checklists/middle.md)
 - [ ] [Senior Developer Checklist](checklists/senior.md)
-- [ ] [Системное проектирование](checklists/system-design.md)
 
 ---
 

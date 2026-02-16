@@ -1,5 +1,6 @@
 # Ресурсы для изучения алгоритмов
-
+https://www.youtube.com/watch?v=Upd0XWIyBcg&list=PL0k-9Y7O1GwccXKHRzmvVj17yB7T9pjTo&index=11 - решение задач 
+https://leetcode.com/studyplan/leetcode-75/?utm_source=chatgpt.com  - 75 задач, разбиты по категориям
 ## Практические платформы
 
 ### LeetCode
