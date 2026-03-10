@@ -255,6 +255,7 @@ class UserController extends Controller
 - View НЕ знает о Model (только Presenter)
 - Presenter содержит presentation logic
 - View максимально "глупый" (только отображение)
+- **ВАЖНО:** Presenter ЗНАЕТ о View и управляет им через интерфейс (вызывает методы типа `showError()`, `showLoading()`)
 
 ### Реализация
 
@@ -345,10 +346,58 @@ class PostList extends Component implements PostListView
          (two-way binding)
 ```
 
+**Ключевые отличия от MVP и MVC:**
+
+| Аспект | MVC (Controller) | MVP (Presenter) | MVVM (ViewModel) |
+|--------|------------------|-----------------|------------------|
+| **Знание о View** | ✅ Да, возвращает View | ✅ Да, через интерфейс | ❌ Нет, только данные |
+| **Data Binding** | ❌ Ручное | ❌ Ручное через методы | ✅ Two-way автоматическое |
+| **Реактивность** | ❌ Нет | ❌ Нет | ✅ Да |
+| **Управление View** | `return view()` | `view->showError()` | Автоматически через binding |
+
+**Пример различий:**
+
+```php
+// ❌ MVC - Controller знает о View
+class PostController {
+    public function create(Request $request) {
+        $post = Post::create($request->all());
+        return view('posts.success', ['post' => $post]); // Явно возвращает View
+    }
+}
+
+// ❌ MVP - Presenter управляет View через методы
+class PostPresenter {
+    public function __construct(private PostView $view) {}
+    
+    public function createPost(array $data) {
+        $this->view->showLoading();  // Прямой вызов метода View
+        $post = Post::create($data);
+        $this->view->showSuccess($post); // Presenter ЗНАЕТ о View
+    }
+}
+
+// ✅ MVVM - ViewModel НЕ знает о View, только данные + реактивность
+class PostViewModel extends Component {
+    public string $title = '';
+    public bool $loading = false;
+    public string $successMessage = '';
+    
+    public function create() {
+        $this->loading = true; // View автоматически обновится!
+        
+        $post = Post::create(['title' => $this->title]);
+        
+        $this->successMessage = 'Post created!'; // View увидит изменение
+        $this->loading = false; // View обновится снова
+    }
+}
+```
+
 **ViewModel:**
 - Представление данных для View
-- Two-way data binding
-- Популярно в Vue.js, Angular, React
+- Two-way data binding (изменения синхронизируются автоматически)
+- Популярно в Vue.js, Angular, React, Livewire
 
 ### Реализация с Livewire
 
@@ -398,6 +447,34 @@ class CreatePost extends Component
     <button type="submit">Save</button>
 </form>
 ```
+
+**Почему не просто Controller?**
+
+```php
+// ❌ С Controller - нужен полный page reload
+class PostController {
+    public function store(Request $request) {
+        $post = Post::create($request->all());
+        return redirect()->back(); // ← Полная перезагрузка страницы!
+    }
+}
+
+// ✅ С ViewModel (Livewire) - реактивные обновления БЕЗ перезагрузки
+class CreatePost extends Component {
+    public string $title = '';
+    
+    public function save() {
+        Post::create(['title' => $this->title]);
+        $this->title = ''; // ← Input очистится автоматически в браузере!
+        // Нет return view(), нет redirect - View обновляется сам
+    }
+}
+```
+
+**Главное преимущество MVVM:**
+- 🔄 **Реактивность** - View и ViewModel синхронизированы автоматически
+- 🚀 **Без перезагрузок** - изменения применяются динамически (SPA-like experience)
+- 🎯 **ViewModel не знает о View** - он просто меняет данные, View сам подписывается на изменения
 
 ---
 
@@ -527,6 +604,29 @@ class PaymentListener
 - ❌ Простое приложение
 - ❌ Нет опыта с distributed systems
 
+**Microservices + способы коммуникации:**
+
+Микросервисы могут общаться **по-разному**:
+
+```php
+// 1️⃣ Synchronous REST API (НЕ Event-Driven)
+$user = Http::get("http://user-service/api/users/{$id}");
+
+// 2️⃣ Event-Driven через Message Broker
+event(new OrderCreated($order)); // → RabbitMQ → Payment Service
+
+// 3️⃣ gRPC (синхронный)
+$response = UserServiceClient::getUser($id);
+```
+
+**Выбор зависит от задачи:**
+- **REST/gRPC** — когда нужен немедленный ответ (get user, validate payment)
+- **Event-Driven** — когда можно асинхронно (send email, update analytics)
+
+**Итого:**  
+Microservices — это **организация** системы.  
+Event-Driven — это **способ коммуникации** (один из многих).
+
 ---
 
 ## 📨 Event-Driven Architecture
@@ -541,10 +641,53 @@ class PaymentListener
                                  └─> [Analytics Service]
 ```
 
+**⚠️ Event-Driven ≠ Microservices!**
+
+| Аспект | Microservices | Event-Driven |
+|--------|---------------|--------------|
+| **Что это** | КАК **организована** система | КАК **общаются** компоненты |
+| **Сущность** | Отдельные сервисы, своя БД | Паттерн коммуникации через события |
+| **Где применяется** | Только distributed systems | Монолит ИЛИ микросервисы |
+| **Пример** | User Service, Order Service | Laravel Events, RabbitMQ |
+
+**Event-Driven может быть в монолите:**
+```php
+// 🏢 МОНОЛИТ с Event-Driven - все в одном приложении!
+class UserService {
+    public function register(array $data) {
+        $user = User::create($data);
+        event(new UserCreated($user)); // ← Event-Driven внутри монолита!
+        return $user;
+    }
+}
+
+// В том же приложении
+class SendWelcomeEmail {
+    public function handle(UserCreated $event) {
+        Mail::send(...);
+    }
+}
+```
+
+**Event-Driven может быть в микросервисах:**
+```php
+// 🏗️ МИКРОСЕРВИСЫ с Event-Driven
+// User Service публикует в RabbitMQ
+event(new UserCreated($user)); // → RabbitMQ
+
+// Email Service (другое приложение!) подписан на RabbitMQ
+class EmailService {
+    public function handle(UserCreated $event) {
+        Mail::send(...);
+    }
+}
+```
+
 **Характеристики:**
-- Loose coupling (сервисы не знают друг о друге)
+- Loose coupling (компоненты не знают друг о друге)
 - Async processing
 - Event store (история событий)
+- **Работает в монолите И в микросервисах**
 
 ### Реализация
 
@@ -901,14 +1044,16 @@ class UserRepository
 
 ## 📊 Сравнительная таблица
 
-| Pattern | Use Case | Complexity | Scalability |
-|---------|----------|------------|-------------|
-| Layered | Средние приложения | Средняя | Средняя |
-| MVC | Веб-приложения | Низкая | Средняя |
-| Microservices | Большие системы | Высокая | Очень высокая |
-| Event-Driven | Async processing | Средняя | Высокая |
-| CQRS | Разные нагрузки read/write | Высокая | Высокая |
-| Event Sourcing | Audit log, temporal queries | Очень высокая | Средняя |
+| Pattern | Use Case | Complexity | Scalability | Монолит/Микросервисы |
+|---------|----------|------------|-------------|----------------------|
+| Layered | Средние приложения | Средняя | Средняя | Оба |
+| MVC | Веб-приложения | Низкая | Средняя | Оба |
+| Microservices | Большие системы | Высокая | Очень высокая | Только микросервисы |
+| Event-Driven | Async processing | Средняя | Высокая | **Оба** (Laravel Events / RabbitMQ) |
+| CQRS | Разные нагрузки read/write | Высокая | Высокая | Оба |
+| Event Sourcing | Audit log, temporal queries | Очень высокая | Средняя | Оба |
+
+**Важно:** Event-Driven работает в монолите (Laravel Events) И в микросервисах (RabbitMQ/Kafka)!
 
 ---
 
@@ -917,10 +1062,16 @@ class UserRepository
 1. **Layered** - Presentation → Business → Data Access
 2. **MVC** - Model-View-Controller, Laravel по умолчанию
 3. **Microservices** - независимые сервисы, своя БД, REST/gRPC
-4. **Event-Driven** - loose coupling через события
+4. **Event-Driven** - loose coupling через события (работает в МОНОЛИТЕ и микросервисах!)
 5. **CQRS** - разделение read/write моделей
 6. **Event Sourcing** - хранение событий вместо состояния
 7. **Когда использовать** - Microservices для больших команд, CQRS для read-heavy, Event Sourcing для audit
 8. **Trade-offs** - сложность vs scalability
+
+**❗ Частая ошибка на собеседовании:**
+- Event-Driven ≠ Microservices
+- Event-Driven — это паттерн коммуникации (как общаются)
+- Microservices — это архитектурный стиль (как организована система)
+- Event-Driven может быть внутри монолита (Laravel Events) или между микросервисами (RabbitMQ)
 
 **Главное:** Выбирай простейшую архитектуру для своих требований, не переусложняй.

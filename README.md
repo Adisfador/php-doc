@@ -93,6 +93,7 @@
 - 🟡 [Kubernetes](devops/kubernetes.md) - pods, services, deployments, основы оркестрации
 - 🔴 [Веб-серверы](devops/web-servers.md) - Nginx, Apache, устройство, отличия
 - 🔴 [CGI и PHP серверы](devops/php-servers.md) - CGI, FastCGI, PHP-FPM, mod_php
+- 🟡 [Swoole, RoadRunner, Laravel Octane](devops/swoole-octane-roadrunner.md) - persistent PHP процессы, application servers, FrankenPHP
 - 🟡 [Git](devops/git.md) - продвинутые команды, стратегии ветвления, rebase vs merge
 - 🟡 [CI/CD](devops/cicd.md) - пайплайны, автоматизация, best practices
 - 📚 [Обучающие ресурсы](devops/resources.md) - курсы, видео, книги по DevOps
