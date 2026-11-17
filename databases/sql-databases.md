@@ -102,7 +102,8 @@ CHAR(n)           -- фиксированная длина, дополняетс
 VARCHAR(n)        -- переменная длина, limit n
 TEXT              -- неограниченная длина (используй TEXT вместо VARCHAR без причины)
 
--- Пример: TEXT быстрее VARCHAR в PostgreSQL
+-- Пример: TEXT и VARCHAR(n) хранятся одинаково и работают с той же скоростью.
+-- VARCHAR(n) не выделяет n байт заранее, а лишь проверяет длину при записи.
 CREATE TABLE posts (
     id SERIAL PRIMARY KEY,
     title VARCHAR(255) NOT NULL,  -- явный лимит для валидации
@@ -1310,27 +1311,39 @@ UNLOCK TABLES;
 
 ## 🔥 Важные различия для собеседования
 
-| Аспект | PostgreSQL | MySQL |
-|--------|-----------|-------|
-| **AUTO_INCREMENT** | `SERIAL` / `IDENTITY` | `AUTO_INCREMENT` |
-| **LIMIT** | `LIMIT 10 OFFSET 20` | `LIMIT 20, 10` или `LIMIT 10 OFFSET 20` |
-| **String concat** | `\|\|` или `concat()` | `concat()` |
-| **BOOLEAN** | `TRUE`/`FALSE` (настоящий boolean) | `TINYINT(1)` (0/1) |
-| **UPSERT** | `ON CONFLICT DO UPDATE` | `ON DUPLICATE KEY UPDATE` |
-| **RETURNING** | ✅ Есть | ❌ Нет |
-| **CTE (WITH)** | ✅ С 8.4 | ✅ С 8.0 |
-| **Window Functions** | ✅ С 8.4 | ✅ С 8.0 |
-| **LATERAL JOIN** | ✅ С 9.3 | ✅ С 8.0.14 |
-| **Arrays** | ✅ Native support | ❌ Нет (JSON workaround) |
-| **JSON** | `JSON` + `JSONB` (бинарный, индексируемый) | `JSON` (бинарный с 5.7) |
-| **Full-Text Search** | ✅ Очень мощный | ✅ Базовый (InnoDB FTS) |
-| **Partial indexes** | ✅ Есть | ❌ Нет |
-| **Expression indexes** | ✅ Есть | ✅ С 8.0.13 (functional) |
-| **Репликация** | Streaming, Logical | Async/Semi-sync, GTID, Group Replication |
-| **VACUUM** | ✅ Обязательно | ❌ Не нужно |
-| **Storage Engine** | ❌ Один (PostgreSQL) | ✅ Множество (InnoDB, MyISAM, Memory) |
+| Аспект                 | PostgreSQL                                 | MySQL                                    |
+|------------------------|--------------------------------------------|------------------------------------------|
+| **AUTO_INCREMENT**     | `SERIAL` / `IDENTITY`                      | `AUTO_INCREMENT`                         |
+| **LIMIT**              | `LIMIT 10 OFFSET 20`                       | `LIMIT 20, 10` или `LIMIT 10 OFFSET 20`  |
+| **String concat**      | `\|\|` или `concat()`                      | `concat()`                               |
+| **BOOLEAN**            | `TRUE`/`FALSE` (настоящий boolean)         | `TINYINT(1)` (0/1)                       |
+| **UPSERT**             | `ON CONFLICT DO UPDATE`                    | `ON DUPLICATE KEY UPDATE`                |
+| **RETURNING**          | ✅ Есть                                    | ❌ Нет                                   |
+| **CTE (WITH)**         | ✅ С 8.4                                   | ✅ С 8.0                                 |
+| **Window Functions**   | ✅ С 8.4                                   | ✅ С 8.0                                 |
+| **LATERAL JOIN**       | ✅ С 9.3                                   | ✅ С 8.0.14                              |
+| **Arrays**             | ✅ Native support                          | ❌ Нет (JSON workaround)                 |
+| **JSON**               | `JSON` + `JSONB` (бинарный, индексируемый) | `JSON` (бинарный с 5.7)                  |
+| **Full-Text Search**   | ✅ Очень мощный                            | ✅ Базовый (InnoDB FTS)                  |
+| **Partial indexes**    | ✅ Есть                                    | ❌ Нет                                   |
+| **Expression indexes** | ✅ Есть                                    | ✅ С 8.0.13 (functional)                 |
+| **Репликация**         | Streaming, Logical                         | Async/Semi-sync, GTID, Group Replication |
+| **VACUUM**             | ✅ Обязательно                             | ❌ Не нужно                              |
+| **Storage Engine**     | ❌ Один (PostgreSQL)                       | ✅ Множество (InnoDB, MyISAM, Memory)    |
 
----
+### ⚠️ Неочевидное поведение MySQL
+
+- **Неявное приведение**: `'abc' = 0` → истина, `id = '5abc'` найдёт `id = 5`. Сравнение строкового индексированного поля с числом не использует индекс.
+- **Усечение**: без `STRICT_TRANS_TABLES` длинная строка молча обрезается (в 8.0 строгий режим по умолчанию).
+- **`utf8` = `utf8mb3`** (3 байта, эмодзи не влезут) → нужен `utf8mb4`.
+- **Регистр и акценты**: коллация по умолчанию нечувствительна (`'a' = 'A'`, `'e' = 'é'`), UNIQUE тоже.
+- **GROUP BY без `ONLY_FULL_GROUP_BY`**: поле вне группы возвращается произвольным значением.
+- **`BOOLEAN` = `TINYINT(1)`**: можно записать `2`. Защита: `CHECK (col IN (0, 1))`.
+- **`UNSIGNED`**: вычитание с отрицательным результатом → ошибка переполнения.
+- **`ADD COLUMN NOT NULL` без DEFAULT**: строки молча получают `0` / `''`.
+- **Нулевые даты** `0000-00-00` и деление на 0 → `NULL` без ошибки (в нестрогом режиме).
+- **`CHECK` до 8.0.16 и FK в MyISAM** разбираются и игнорируются.
+- **DDL = неявный COMMIT** (в PostgreSQL DDL транзакционный). `START TRANSACTION` внутри транзакции тоже коммитит предыдущую.
 
 ---
 
@@ -1349,7 +1362,7 @@ A: Возвращает вставленные/обновлённые данны
 A: PostgreSQL использует MVCC с tuple versioning (старые версии остаются). MySQL InnoDB использует undo logs + purge thread (автоматическая очистка).
 
 **Q: Чем REPEATABLE READ в PostgreSQL отличается от MySQL?**
-A: PostgreSQL предотвращает phantom reads на RR (благодаря MVCC), MySQL - нет (используется next-key locking, но не полная защита).
+A: Оба предотвращают phantom reads для обычного SELECT за счёт снимка (MVCC). Разница в записи и блокирующем чтении: PostgreSQL работает по снимку и при конфликте даёт ошибку сериализации (`could not serialize access`), а MySQL для `SELECT ... FOR UPDATE`/`UPDATE`/`DELETE` читает актуальные данные (current read) и защищается next-key locks (gap locks), из-за чего возможны ожидания и deadlock.
 
 **Q: Когда использовать PostgreSQL vs MySQL?**
 A: PostgreSQL - сложные запросы, JSON, full-text search, strict consistency. MySQL - простые CRUD, read-heavy, простота настройки, WordPress/легаси.

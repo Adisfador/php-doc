@@ -12,7 +12,7 @@
 - Целостность данных после транзакции
 - Constraint checking
 - Triggers и их роль
-- Деferred constraints
+- Deferred constraints
 
 ### Isolation (Изолированность)
 - Одновременные транзакции не влияют друг на друга
@@ -93,11 +93,11 @@ SELECT COUNT(*) FROM accounts WHERE balance > 500; -- 11 строк
 |---------|------------|---------------------|--------------|-------------|------------|-----------------------|
 | **Read Uncommitted** | ✅ Возможен | ✅ Возможен | ✅ Возможен | ✅ Возможен | ✅ Возможен | ✅ Возможен |
 | **Read Committed** | ❌ Невозможен | ✅ Возможен | ✅ Возможен | ✅ Возможен | ✅ Возможен | ✅ Возможен |
-| **Repeatable Read** | ❌ Невозможен | ❌ Невозможен | ⚠️ Зависит* | ❌ Невозможен** | ✅ Возможен | ✅ Возможен |
+| **Repeatable Read** | ❌ Невозможен | ❌ Невозможен | ⚠️ Зависит* | ⚠️ Зависит** | ✅ Возможен | ✅ Возможен |
 | **Serializable** | ❌ Невозможен | ❌ Невозможен | ❌ Невозможен | ❌ Невозможен | ❌ Невозможен | ❌ Невозможен |
 
-*В PostgreSQL Phantom Read невозможен даже на RR благодаря MVCC  
-**В PostgreSQL Lost Update предотвращается на RR
+*PostgreSQL: Phantom Read невозможен на RR (snapshot isolation). MySQL/InnoDB: обычные SELECT читают снимок, locking reads защищены next-key locks, но после собственного UPDATE чужие вставленные строки могут «появиться»  
+**PostgreSQL: Lost Update предотвращается на RR (ошибка 40001 `could not serialize access`). MySQL/InnoDB: НЕ предотвращается при схеме `SELECT → вычисление в приложении → UPDATE` (UPDATE делает current read и перезаписывает). Защита: `SELECT ... FOR UPDATE`, атомарный `SET x = x + 1`, version-колонка, SERIALIZABLE
 
 ### Read Uncommitted
 ```sql
@@ -107,7 +107,7 @@ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 - Практически не используется
 - В PostgreSQL эквивалентен Read Committed
 
-### Read Committed (по умолчанию в PostgreSQL/MySQL)
+### Read Committed (по умолчанию в PostgreSQL; в MySQL InnoDB по умолчанию Repeatable Read)
 ```sql
 SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
 ```
@@ -123,6 +123,28 @@ SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 - Повторные чтения возвращают те же данные
 - В PostgreSQL: основан на MVCC, может быть serialization failure
 
+**RR: PostgreSQL vs MySQL/InnoDB**
+
+| | PostgreSQL | MySQL/InnoDB |
+|---|---|---|
+| По умолчанию | нет (Read Committed) | да |
+| Снимок | на первый запрос транзакции | на первый consistent read |
+| `UPDATE`/`DELETE` | работают по снимку; при конфликте с чужим коммитом — `40001` | current read: видят последнюю закоммиченную версию, блокируют строки |
+| Lost update | предотвращается (ошибка + retry) | **возможен** (`SELECT` → `UPDATE` значением из приложения) |
+| Фантомы | нет (snapshot) | snapshot-чтения без фантомов; locking reads защищены next-key/gap locks |
+| Gap locks | нет | есть |
+
+```sql
+-- InnoDB, REPEATABLE READ: lost update
+-- T1: SELECT balance FROM accounts WHERE id=1;   -- 100
+-- T2: SELECT balance FROM accounts WHERE id=1;   -- 100
+-- T1: UPDATE accounts SET balance = 150 WHERE id=1; COMMIT;
+-- T2: UPDATE accounts SET balance = 120 WHERE id=1; COMMIT;  -- ждал lock, потом затёр
+-- Итог 120, прибавка T1 потеряна. В PostgreSQL T2 получила бы 40001.
+```
+
+Защита в InnoDB: `SELECT ... FOR UPDATE`, `SET balance = balance + 50`, version-колонка, SERIALIZABLE (+ retry при deadlock).
+
 ### Serializable
 ```sql
 SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
@@ -131,6 +153,34 @@ SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 - Serialization failures при конфликтах
 - SSI (Serializable Snapshot Isolation) в PostgreSQL
 - Требует retry логики в приложении
+
+### Производительность уровней изоляции
+
+Сам снимок (snapshot / read view) стоит дёшево, поэтому **RC и RR по скорости отличаются мало**. Реальные расходы дают локи, долгие транзакции и откаты с повторами.
+
+| | Read Committed | Repeatable Read | Serializable |
+|---|---|---|---|
+| **PostgreSQL** | базовая скорость | почти такая же; риск bloat от долгих транзакций, откаты `40001` | накладные расходы SSI + откаты и retry |
+| **InnoDB** | меньше всего локов | больше локов (gap/next-key): ожидания и дедлоки | каждый `SELECT` ставит shared-лок, читатели блокируют писателей |
+
+**PostgreSQL:**
+- RC: снимок на каждую команду, между командами не держится
+- RR: один снимок на всю транзакцию → пока он жив, `VACUUM` не может чистить мёртвые версии строк, которые снимок мог бы увидеть → bloat и замедление. Поэтому долгие RR-транзакции вредны
+- `40001` на RR/Serializable: транзакция отработала впустую и выполняется заново
+- Serializable (SSI): чтения не блокируют, но СУБД ведёт SIREAD-метки (память + CPU). При их укрупнении (строка → страница → таблица) растёт число ложных откатов. Накладные расходы заметны, но при редких конфликтах терпимы
+
+**InnoDB:**
+- RC: gap-локов почти нет, лишние локи на непопавшие под условие строки снимаются сразу после команды → меньше ожиданий и дедлоков (поэтому RC часто выбирают для write-heavy нагрузки)
+- RR: `UPDATE`/`FOR UPDATE` держат next-key/gap-локи на весь просмотренный диапазон до конца транзакции → вставки в диапазон ждут
+- Долгая RR-транзакция держит read view → purge не чистит undo log → растёт `history list length`, чтения старых версий замедляются
+- Serializable: самый сильный спад пропускной способности при конкуренции
+
+**От чего зависит итог (не от «частоты изменений» вообще):**
+1. **Конкуренция** — сколько транзакций одновременно трогают одни и те же строки. Мало → разницы почти нет, в PG даже Serializable недорог
+2. **Длина транзакции** — чем длиннее, тем дольше держатся локи (InnoDB) или снимок (PG)
+3. **Доля записи** — read-heavy нагрузка мало страдает на любом уровне, write-heavy на InnoDB выигрывает от RC
+
+**Практика:** держи транзакции короткими, не делай внутри них внешние вызовы, повышай уровень точечно на нужную транзакцию (`BEGIN ISOLATION LEVEL ...`), а не глобально; на RR/Serializable в PG retry обязателен.
 
 ---
 
@@ -170,15 +220,34 @@ SELECT ... FOR UPDATE NOWAIT;
 LOCK TABLE accounts IN ACCESS EXCLUSIVE MODE;
 ```
 
-Режимы блокировок таблиц (от слабых к сильным):
+Режимы блокировок таблиц (от слабых к сильным). В скобках — команды, которые **сами берут** этот режим на таблицу (это не список того, что разрешено):
 - ACCESS SHARE (SELECT)
-- ROW SHARE (SELECT FOR UPDATE)
+- ROW SHARE (SELECT FOR UPDATE / FOR SHARE)
 - ROW EXCLUSIVE (INSERT, UPDATE, DELETE)
-- SHARE UPDATE EXCLUSIVE (VACUUM, некоторые ALTER TABLE)
-- SHARE (CREATE INDEX)
-- SHARE ROW EXCLUSIVE
-- EXCLUSIVE
-- ACCESS EXCLUSIVE (DROP, TRUNCATE, VACUUM FULL)
+- SHARE UPDATE EXCLUSIVE (VACUUM без FULL, ANALYZE, CREATE INDEX CONCURRENTLY, некоторые ALTER TABLE)
+- SHARE (CREATE INDEX без CONCURRENTLY)
+- SHARE ROW EXCLUSIVE (CREATE TRIGGER, некоторые ALTER TABLE, например ADD FOREIGN KEY)
+- EXCLUSIVE (REFRESH MATERIALIZED VIEW CONCURRENTLY)
+- ACCESS EXCLUSIVE (DROP TABLE, TRUNCATE, VACUUM FULL, CLUSTER, REINDEX, большинство ALTER TABLE; режим по умолчанию у `LOCK TABLE`)
+
+**Таблица конфликтов** — какие режимы не могут одновременно держаться на одной таблице разными транзакциями (второй запрос ждёт):
+
+| Режим | Конфликтует с |
+|---|---|
+| ACCESS SHARE | ACCESS EXCLUSIVE |
+| ROW SHARE | EXCLUSIVE, ACCESS EXCLUSIVE |
+| ROW EXCLUSIVE | SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE, ACCESS EXCLUSIVE |
+| SHARE UPDATE EXCLUSIVE | SHARE UPDATE EXCLUSIVE, SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE, ACCESS EXCLUSIVE |
+| SHARE | ROW EXCLUSIVE, SHARE UPDATE EXCLUSIVE, SHARE ROW EXCLUSIVE, EXCLUSIVE, ACCESS EXCLUSIVE |
+| SHARE ROW EXCLUSIVE | ROW EXCLUSIVE, SHARE UPDATE EXCLUSIVE, SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE, ACCESS EXCLUSIVE |
+| EXCLUSIVE | все, кроме ACCESS SHARE |
+| ACCESS EXCLUSIVE | все |
+
+Следствия:
+- `SELECT` (ACCESS SHARE) блокируется только `ACCESS EXCLUSIVE`
+- Несколько `UPDATE`/`INSERT` (ROW EXCLUSIVE) на одной таблице не конфликтуют между собой на уровне таблицы (конфликты решаются на уровне строк)
+- `CREATE INDEX` без `CONCURRENTLY` (SHARE) ждёт все текущие записи и блокирует новые
+- `ALTER TABLE`/`TRUNCATE` на живой таблице (ACCESS EXCLUSIVE) встают в очередь за всеми запросами, а все новые запросы встают за ним — таблица «зависает»
 
 #### 2. Optimistic Locking (Оптимистичные блокировки)
 Проверяем конфликты при сохранении, не блокируем чтение
@@ -215,7 +284,7 @@ class Account extends Model
             ->where('id', $this->id)
             ->where('version', $currentVersion)
             ->update([
-                'balance' => DB::raw('balance + ' . $amount),
+                'balance' => DB::raw('balance + ' . (float) $amount), // приводим тип: иначе SQL-инъекция
                 'version' => $currentVersion + 1
             ]);
             
@@ -275,6 +344,33 @@ SELECT * FROM users WHERE id = 1;
 -- Видит 'Alice', потому что TX 101 еще не закоммитилась
 ```
 
+### Снимок (snapshot) в PostgreSQL: кто виден
+
+Снимок — это не копия данных, а маленькая структура про состояние всей БД в момент взятия:
+
+- `xmin` — id **самой старой ещё активной** транзакции (все id меньше уже завершены)
+- `xmax` — следующий ещё не выданный id (всё `>= xmax` стартовало после снимка)
+- `xip` — список транзакций, **активных** в момент снимка
+
+Id выдаются по порядку старта, а завершаются в любом порядке. Долгая транзакция «держит» `xmin`, поэтому между `xmin` и `xmax` лежат и активные, и уже завершённые (commit/abort) транзакции.
+
+**Правило видимости изменений транзакции Tn:**
+
+1. `Tn >= xmax` → не видна (стартовала после снимка)
+2. `Tn` в `xip` → не видна (шла в момент снимка, даже если потом закоммитится)
+3. иначе (`Tn` завершилась до снимка) → смотрим статус в `pg_xact`: **commit → видна, abort → не видна**
+4. собственные изменения транзакция видит всегда
+
+**Пример:** в момент снимка T100 идёт, T101 commit, T102 идёт, T103 abort, T104 commit, T105 не стартовала → `xmin=100`, `xmax=105`, `xip={100,102}`. Видны T101 и T104. T103 завершилась, но откатилась. T100 и T102 в `xip`. T105 после `xmax`.
+
+**Видимость версии строки:** `xmin` строки (создатель) виден снимку, а `xmax` строки (удалитель/заменивший) пуст или невиден снимку.
+
+**Когда берётся снимок:**
+- Read Committed — новый на каждую команду
+- Repeatable Read — один на транзакцию, на первой команде, читающей/пишущей данные (`BEGIN`, `SET`, `SAVEPOINT` не считаются). В InnoDB — на первом обычном `SELECT` (consistent read), `UPDATE`/`FOR UPDATE` снимок не создают
+- Снимок относится ко всей БД, а не к конкретным строкам: `UPDATE` сначала находит строки по правилам видимости снимка, потом создаёт новые версии со своим xid
+- xid выдаётся лениво, на первой записи; у read-only транзакции xid может не быть, а снимок есть
+
 **Преимущества MVCC:**
 - Читатели не блокируют писателей
 - Писатели не блокируют читателей
@@ -321,7 +417,7 @@ while ($attempt < $maxRetries) {
             if ($attempt >= $maxRetries) {
                 throw $e;
             }
-            usleep(100000 * $attempt); // exponential backoff
+            usleep(100000 * 2 ** $attempt); // exponential backoff
         } else {
             throw $e;
         }
@@ -422,7 +518,7 @@ ROLLBACK PREPARED 'trans_id';
 1. **ACID** - Atomicity (WAL), Consistency (constraints), Isolation (levels), Durability (fsync)
 2. **Уровни изоляции** - Read Uncommitted < Read Committed < Repeatable Read < Serializable
 3. **Аномалии** - Dirty Read, Non-Repeatable Read, Phantom Read, Lost Update, Write Skew
-4. **REPEATABLE READ различия** - PostgreSQL предотвращает phantom reads (MVCC), MySQL нет (next-key locks)
+4. **REPEATABLE READ различия** - PostgreSQL: snapshot isolation, при конфликте записи `40001` (lost update невозможен). MySQL/InnoDB (уровень по умолчанию): UPDATE/FOR UPDATE делают current read, lost update возможен без FOR UPDATE/атомарного апдейта/версии; фантомы закрыты snapshot'ом + next-key/gap locks
 5. **MVCC** - PostgreSQL: tuple versioning, MySQL: undo logs. Читатели не блокируют писателей
 6. **Pessimistic Locking** - FOR UPDATE/SHARE, блокируем сразу. SKIP LOCKED для очередей
 7. **Optimistic Locking** - version field, проверяем при сохранении. Для read-heavy

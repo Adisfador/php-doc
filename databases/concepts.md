@@ -72,7 +72,7 @@ products: id, name, price
 
 **Примеры запросов:**
 ```sql
--- Продажи по регионам за год (minutes)
+-- Продажи по регионам за год (в ClickHouse — доли секунды/секунды на миллиардах строк)
 SELECT 
     region,
     SUM(amount) as total_sales,
@@ -111,7 +111,7 @@ ORDER BY cohort, month;
 
 **Метрики производительности:**
 - **Scan speed** - скорость сканирования (GB/sec)
-- **Query time** - время выполнения запроса (minutes/hours)
+- **Query time** - время выполнения запроса (от долей секунды до минут на тяжёлых отчётах)
 - **Compression ratio** - степень сжатия данных
 
 **БД для OLAP:**
@@ -120,24 +120,27 @@ ORDER BY cohort, month;
 
 **Пример: Data Warehouse для e-commerce**
 ```sql
--- Denormalized fact table (звездообразная схема)
+-- Fact table (звездообразная схема): ключи измерений + числовые метрики
 CREATE TABLE fact_sales (
     sale_id BIGINT,
     date_id INT,           -- FK to dim_date
     user_id INT,           -- FK to dim_users
     product_id INT,        -- FK to dim_products
     quantity INT,
-    amount DECIMAL(10,2),
-    region VARCHAR(50),    -- денормализовано
-    category VARCHAR(100)  -- денормализовано
-) ENGINE = MergeTree()
-ORDER BY (date_id, region);
+    amount DECIMAL(10,2)
+) ENGINE = MergeTree()     -- синтаксис ClickHouse
+ORDER BY (date_id, product_id);
 
--- Dimension tables
+-- Dimension tables — денормализованы (в этом смысл звезды)
 dim_date: date_id, date, year, quarter, month, week, day_of_week
-dim_users: user_id, email, name, registration_date, segment
+dim_users: user_id, email, name, registration_date, segment, region
 dim_products: product_id, name, category, subcategory, brand
+-- category и subcategory лежат прямо в dim_products, а не в отдельных таблицах.
+-- Snowflake schema = те же измерения, но нормализованные:
+-- dim_products → dim_subcategories → dim_categories (меньше дублей, больше JOIN)
 ```
+
+> На практике в ClickHouse часто идут дальше звезды и делают одну широкую плоскую таблицу (region, category прямо в факте): JOIN'ы там дорогие, а колоночное хранение и сжатие делают дублирование дешёвым. Но это уже не star schema, а wide/flat table.
 
 **Star Schema:**
 ```
@@ -185,8 +188,9 @@ fact_sales --+-- dim_products
 
 1. **High Availability (HA)** - отказоустойчивость (если master упал, failover на replica)
 2. **Read Scaling** - распределить чтение на replicas (master пишет, replicas читают)
-3. **Backup** - актуальная копия данных
-4. **Geo-distribution** - replicas в разных регионах (низкая latency)
+3. **Geo-distribution** - replicas в разных регионах (низкая latency)
+
+> ⚠️ **Реплика — НЕ бэкап.** Случайный `DELETE FROM users` или `DROP TABLE` мгновенно реплицируется на все реплики. Бэкап — это копия **на момент времени**, к которой можно откатиться: `pg_dump`, PITR (базовый бэкап + архив WAL), снапшоты. Реплика защищает от падения сервера, бэкап — от ошибки человека или приложения. Частый вопрос-ловушка.
 
 ---
 
@@ -210,9 +214,9 @@ fact_sales --+-- dim_products
 ```
 Master: INSERT INTO users ... (commit) ✅
   |
-  | (асинхронно, секунды задержки)
+  | (асинхронно, обычно миллисекунды задержки)
   ↓
-Replica: INSERT INTO users ... ✅ (через 1-5 сек)
+Replica: INSERT INTO users ... ✅ (под нагрузкой или при долгих запросах на реплике — секунды и больше)
 ```
 
 **Проблемы:**
@@ -232,13 +236,15 @@ Master: commit ✅
 ```
 
 **Trade-offs:**
-- ✅ Нет потери данных (replica всегда актуальна)
+- ✅ Нет потери подтверждённых данных при падении master
+- ⚠️ Но это НЕ значит «replica всегда актуальна»: в PostgreSQL при `synchronous_commit = on` master ждёт, пока WAL **записан на диск** реплики, а не **применён**. Чтение с реплики сразу после коммита может вернуть старые данные. Гарантию «прочитаю своё» даёт только `synchronous_commit = remote_apply`
 - ❌ Медленнее (ждем replica)
 - ❌ Если replica недоступна - пишущие запросы зависнут
 
 **Semi-synchronous репликация (MySQL):**
-- Master ждет подтверждение от хотя бы 1 replica
+- Master ждет подтверждение от хотя бы 1 replica, что событие **получено** (записано в relay log), а не применено
 - Баланс между скоростью и безопасностью
+- ⚠️ При таймауте (`rpl_semi_sync_source_timeout`) **молча откатывается в async** — гарантии пропадают именно тогда, когда что-то пошло не так
 
 ---
 
@@ -259,24 +265,28 @@ pg_basebackup -h master_ip -D /var/lib/postgresql/data -U replication -P -v -R
 ```
 
 **Synchronous Replication:**
-```sql
--- На master (postgresql.conf)
-synchronous_commit = on
+```bash
+# На master (postgresql.conf)
+# Синхронность включает именно этот параметр; имя должно совпадать
+# с application_name в primary_conninfo реплики
 synchronous_standby_names = 'replica1'
 
--- Master будет ждать подтверждения от replica1 перед commit
+# synchronous_commit = on — значение по умолчанию: ждать, пока WAL записан на диск реплики
+# synchronous_commit = remote_apply — ждать, пока реплика ПРИМЕНИЛА изменения
+#   (чтение с реплики сразу увидит коммит, но коммит медленнее)
 ```
 
 **Logical Replication (PostgreSQL 10+):**
 - Репликация на уровне таблиц/строк (не весь WAL)
 - Можно реплицировать только часть БД
-- Разные версии PostgreSQL (master 12, replica 14)
+- Разные версии PostgreSQL (master 12, replica 14) → используется для апгрейда мажорной версии почти без простоя
+- ⚠️ **Схема (DDL) не реплицируется**: таблицы на подписчике нужно создать заранее, а `ALTER TABLE` применять на обеих сторонах вручную
 
 ```sql
 -- На master
 CREATE PUBLICATION my_pub FOR TABLE users, orders;
 
--- На replica
+-- На replica (таблицы users и orders уже должны существовать)
 CREATE SUBSCRIPTION my_sub 
 CONNECTION 'host=master_ip dbname=mydb user=replication' 
 PUBLICATION my_pub;
@@ -286,40 +296,42 @@ PUBLICATION my_pub;
 
 ### MySQL: Replication
 
+> С MySQL 8.0.22+ терминология master/slave заменена на **source/replica**: `CHANGE REPLICATION SOURCE TO`, `START REPLICA`, `SHOW REPLICA STATUS`. Старые команды (`CHANGE MASTER TO`, `START SLAVE`) объявлены устаревшими и в новых версиях (8.4) удалены.
+
 **Asynchronous Replication (по умолчанию):**
 ```sql
--- На master (my.cnf)
+-- На source (my.cnf)
 server-id = 1
 log-bin = mysql-bin
-binlog_format = ROW  -- или STATEMENT, MIXED
+binlog_format = ROW  -- по умолчанию с 5.7; STATEMENT/MIXED — устаревшие варианты
 
 -- На replica (my.cnf)
 server-id = 2
 relay-log = relay-bin
 read_only = 1
 
--- Подключить replica к master
-CHANGE MASTER TO
-  MASTER_HOST='master_ip',
-  MASTER_USER='replication',
-  MASTER_PASSWORD='password',
-  MASTER_LOG_FILE='mysql-bin.000001',
-  MASTER_LOG_POS=154;
+-- Подключить replica к source
+CHANGE REPLICATION SOURCE TO
+  SOURCE_HOST='source_ip',
+  SOURCE_USER='replication',
+  SOURCE_PASSWORD='password',
+  SOURCE_LOG_FILE='mysql-bin.000001',
+  SOURCE_LOG_POS=154;
 
-START SLAVE;
-SHOW SLAVE STATUS\G
+START REPLICA;
+SHOW REPLICA STATUS\G
 ```
 
 **Semi-synchronous Replication:**
 ```sql
--- На master
-INSTALL PLUGIN rpl_semi_sync_master SONAME 'semisync_master.so';
-SET GLOBAL rpl_semi_sync_master_enabled = 1;
-SET GLOBAL rpl_semi_sync_master_timeout = 1000;  -- 1 sec
+-- На source
+INSTALL PLUGIN rpl_semi_sync_source SONAME 'semisync_source.so';
+SET GLOBAL rpl_semi_sync_source_enabled = 1;
+SET GLOBAL rpl_semi_sync_source_timeout = 1000;  -- 1 sec, потом fallback в async
 
 -- На replica
-INSTALL PLUGIN rpl_semi_sync_slave SONAME 'semisync_slave.so';
-SET GLOBAL rpl_semi_sync_slave_enabled = 1;
+INSTALL PLUGIN rpl_semi_sync_replica SONAME 'semisync_replica.so';
+SET GLOBAL rpl_semi_sync_replica_enabled = 1;
 ```
 
 **GTID (Global Transaction ID) - MySQL 5.6+:**
@@ -329,11 +341,11 @@ gtid_mode = ON
 enforce_gtid_consistency = ON
 
 -- Упрощает failover (не нужно помнить binlog position)
-CHANGE MASTER TO
-  MASTER_HOST='new_master_ip',
-  MASTER_USER='replication',
-  MASTER_PASSWORD='password',
-  MASTER_AUTO_POSITION = 1;  -- автоматически найдет позицию через GTID
+CHANGE REPLICATION SOURCE TO
+  SOURCE_HOST='new_source_ip',
+  SOURCE_USER='replication',
+  SOURCE_PASSWORD='password',
+  SOURCE_AUTO_POSITION = 1;  -- автоматически найдет позицию через GTID
 ```
 
 ---
@@ -349,9 +361,9 @@ CHANGE MASTER TO
 # На replica
 pg_ctl promote  # PostgreSQL
 
-# MySQL
-STOP SLAVE;
-RESET SLAVE ALL;
+# MySQL (8.0.22+)
+STOP REPLICA;
+RESET REPLICA ALL;
 SET GLOBAL read_only = 0;  # теперь можно писать
 ```
 
@@ -389,6 +401,9 @@ sentinel failover-timeout mymaster 10000
     'write' => [
         'host' => ['192.168.1.1'],  // master
     ],
+    // После записи в рамках того же HTTP-запроса/джобы все чтения идут на master.
+    // Решает главную проблему replication lag: «записал — и сразу не увидел»
+    'sticky' => true,
     'driver' => 'mysql',
     'database' => 'mydb',
     ...
@@ -399,8 +414,11 @@ DB::table('users')->get();  // автоматически READ с replica
 DB::table('users')->insert([...]);  // WRITE на master
 
 // Принудительно с master (если нужны свежие данные)
-DB::table('users')->onWriteConnection()->get();
+DB::table('users')->useWritePdo()->get();   // Query Builder
+User::onWriteConnection()->find($id);       // Eloquent
 ```
+
+> `sticky` работает только в пределах одного запроса или джобы. Если пользователь создал заказ и *следующим* запросом открыл список заказов, этот запрос может уйти на отстающую реплику. Для таких экранов читай с master явно.
 
 ---
 
@@ -447,9 +465,16 @@ SELECT * FROM events
 WHERE created_at >= '2025-01-10' AND created_at < '2025-01-20';
 -- Сканирует ТОЛЬКО events_2025_01 (быстро!)
 
--- Удаление старых данных = DROP PARTITION (мгновенно)
-DROP TABLE events_2024_01;  -- удалить январь 2024
+-- Удаление старых данных: в PostgreSQL нет DROP PARTITION, партиция — обычная таблица
+DROP TABLE events_2025_01;  -- удалить январь 2025 (мгновенно, в отличие от DELETE)
+-- или сначала отцепить, а потом удалить/заархивировать:
+ALTER TABLE events DETACH PARTITION events_2025_01;
+
+-- Без DEFAULT-партиции INSERT вне всех диапазонов упадёт с ошибкой
+CREATE TABLE events_default PARTITION OF events DEFAULT;
 ```
+
+> ⚠️ Частый подвох: PRIMARY KEY и UNIQUE на партиционированной таблице **обязаны включать ключ партиционирования**. `PRIMARY KEY (id)` здесь не создастся, нужен `PRIMARY KEY (id, created_at)`. Уникальность только по `id` глобально не гарантируется.
 
 **List Partitioning** - по списку значений:
 ```sql
@@ -477,7 +502,7 @@ CREATE TABLE logs_p0 PARTITION OF logs FOR VALUES WITH (MODULUS 4, REMAINDER 0);
 CREATE TABLE logs_p1 PARTITION OF logs FOR VALUES WITH (MODULUS 4, REMAINDER 1);
 CREATE TABLE logs_p2 PARTITION OF logs FOR VALUES WITH (MODULUS 4, REMAINDER 2);
 CREATE TABLE logs_p3 PARTITION OF logs FOR VALUES WITH (MODULUS 4, REMAINDER 3);
--- user_id % 4 определяет партицию
+-- hash(user_id) % 4 определяет партицию (встроенная хеш-функция PostgreSQL, не сам user_id % 4)
 ```
 
 ---
@@ -498,9 +523,11 @@ PARTITION BY RANGE (YEAR(created_at)) (
     PARTITION pmax VALUES LESS THAN MAXVALUE
 );
 
--- Добавить новую партицию
-ALTER TABLE events ADD PARTITION (
-    PARTITION p2027 VALUES LESS THAN (2028)
+-- Добавить новую партицию: ADD PARTITION после MAXVALUE не сработает (ошибка),
+-- поэтому «разрезаем» pmax
+ALTER TABLE events REORGANIZE PARTITION pmax INTO (
+    PARTITION p2026 VALUES LESS THAN (2027),
+    PARTITION pmax VALUES LESS THAN MAXVALUE
 );
 
 -- Удалить старую
@@ -562,7 +589,7 @@ PARTITION BY LIST COLUMNS(region) (
 **Недостатки:**
 - ❌ Сложность (нужен роутинг запросов)
 - ❌ Нет JOIN между shards
-- ❌ Нет транзакций между shards
+- ❌ Нет транзакций между shards из коробки (2PC/XA возможен, но блокирующий — обычно выбирают Saga)
 - ❌ Перешардирование сложное (изменить shard key)
 
 ---
@@ -585,17 +612,16 @@ Shard 3: user_id 2,000,001 - 3,000,000
 - ❌ Новые пользователи все на одном shard
 
 **2. Hash-based Sharding** - по хешу:
-```python
+```
 shard = hash(user_id) % num_shards
 
-# Пример:
-user_id = 12345
-shard = hash(12345) % 4 = 2  # Shard 2
+Пример: user_id = 12345 → hash(12345) % 4 = 2 → Shard 2
 ```
 
 **Плюсы:**
-- ✅ Равномерное распределение
-- ✅ Нет hotspots
+- ✅ Равномерное распределение **ключей**
+- ✅ Нет hotspot от последовательных id (новые пользователи разлетаются по всем shards)
+- ⚠️ Но хеш не спасает от **горячего ключа**: если на одного пользователя (знаменитость, популярный товар) приходится 50% запросов, его shard всё равно перегружен (см. «Проблемы шардирования»)
 
 **Минусы:**
 - ❌ Range queries неэффективны (broadcast на все shards)
@@ -612,8 +638,12 @@ user_id -> hash(user_id) -> найти ближайший shard по часов�
 ```
 
 **Плюсы:**
-- ✅ Добавление/удаление shard = minimal rehashing
-- ✅ Используется в Redis Cluster, Cassandra, DynamoDB
+- ✅ Добавление/удаление shard = переезжает только ~1/N данных (соседний участок кольца), а не всё
+- ✅ Используется в Cassandra, Amazon Dynamo (и DynamoDB), Riak
+
+**Virtual nodes:** с несколькими точками на кольце участки получаются разного размера, и распределение неравномерное. Поэтому каждый физический сервер ставят на кольцо много раз (сотни виртуальных нод): нагрузка выравнивается, а при падении сервера его данные расходятся по многим соседям, а не валятся на одного.
+
+> ⚠️ Redis Cluster использует **не** consistent hashing, а фиксированные **16384 hash slots**: `CRC16(key) % 16384`. Слоты распределены между нодами и переносятся между ними при решардинге. Идея похожая (двигаем куски, а не перехешируем всё), но механизм другой.
 
 **4. Directory-based Sharding** - lookup таблица:
 ```sql
@@ -630,12 +660,12 @@ CREATE TABLE user_shard_map (
 ```
 
 **Плюсы:**
-- ✅ Гибкость (можно менять shard для user)
-- ✅ Неравномерное распределение (VIP users на быстрый shard)
+- ✅ Гибкость (можно перенести конкретного user на другой shard)
+- ✅ Контролируемое размещение (крупные клиенты/VIP — на выделенный shard)
 
 **Минусы:**
-- ❌ Дополнительный lookup запрос
-- ❌ Lookup таблица = single point of failure
+- ❌ Дополнительный lookup запрос (обычно кэшируется)
+- ❌ Lookup таблица = single point of failure, если её не реплицировать
 
 ---
 
@@ -735,9 +765,15 @@ Shard 1: 1000 req/sec
 Shard 2: 100 req/sec   -- недогружен
 Shard 3: 5000 req/sec  -- HOTSPOT!
 
--- Причина: плохой shard key (celebrity user на Shard 3)
--- Решение: rehashing, split shard
+-- Причина: горячий ключ (celebrity user на Shard 3)
+-- Перехеширование и split shard НЕ помогут: один ключ не разрежешь, он всё равно попадёт на один shard
+-- Решения:
+--   1. Кэш перед БД (Redis) — основная нагрузка горячего ключа уходит из базы
+--   2. "Засолить" ключ: писать в user:123:0..N, при чтении агрегировать (для счётчиков, лайков)
+--   3. Вынести горячего клиента на выделенный shard (directory-based)
 ```
+
+Если же hotspot из-за **плохого shard key** (например, range по последовательному id), тогда помогает смена ключа или стратегии (hash), то есть перешардирование.
 
 **4. Перешардирование (re-sharding):**
 - Изменение количества shards требует миграции данных
@@ -749,13 +785,17 @@ Shard 3: 5000 req/sec  -- HOTSPOT!
 
 ### Что такое CAP?
 
-**CAP треугольник** - в распределенной системе можно гарантировать только **2 из 3**:
+Три свойства распределённой системы:
 
-1. **C**onsistency - согласованность (все узлы видят одинаковые данные)
-2. **A**vailability - доступность (система всегда отвечает, даже если узел упал)
-3. **P**artition tolerance - устойчивость к разделению сети (система работает при разрыве связи между узлами)
+1. **C**onsistency - согласованность (линеаризуемость: каждое чтение видит последнюю подтверждённую запись, система ведёт себя как одна копия данных)
+2. **A**vailability - доступность (каждый запрос к **живому** узлу получает не-ошибочный ответ)
+3. **P**artition tolerance - устойчивость к разделению сети (система продолжает работать при разрыве связи между узлами)
 
-**Теорема:** В реальных распределенных системах **Partition** неизбежен (сеть может упасть). Выбор всегда между **CP** или **AP**.
+**Теорема:** если сеть разделилась (P), нужно выбрать **C или A**: либо отказать в запросе, либо ответить, возможно, устаревшими данными. Пока сеть в порядке, можно иметь и C, и A.
+
+> ⚠️ Популярная формулировка «можно гарантировать только 2 из 3» вводит в заблуждение: P в распределённой системе не выбирают, разрывы сети неизбежны. Выбор всегда между **CP** и **AP** — и только на время partition.
+>
+> Ещё одно различие: A в CAP ≠ high availability (99.99%). CP-система может иметь отличный uptime, если при разрывах большинство узлов обычно остаётся вместе.
 
 ---
 
@@ -767,10 +807,13 @@ Shard 3: 5000 req/sec  -- HOTSPOT!
 - ❌ Если узел недоступен - запросы к нему отклоняются (система частично недоступна)
 
 **Примеры:**
-- **MongoDB** (primary-secondary)
+- **MongoDB** (primary-secondary, `w: majority`)
   - Если primary недоступен, replicas read-only (нет записей до failover)
 - **HBase**
-- **Redis Cluster** (в режиме синхронной репликации)
+- **etcd, ZooKeeper, Consul** (консенсус Raft/ZAB)
+- **CockroachDB, Spanner** (NewSQL)
+
+> ⚠️ **Redis Cluster — не CP.** Репликация асинхронная, и при failover кластер может потерять подтверждённые записи; документация Redis прямо говорит, что strong consistency нет. Даже `WAIT` этого не меняет.
 
 **Сценарий:**
 ```
@@ -812,19 +855,23 @@ N = 3 (всего replicas)
 W = 2 (write quorum - подтверждение от 2 узлов)
 R = 2 (read quorum - читать с 2 узлов)
 
-W + R > N  =>  strong consistency (2 + 2 > 3)
+W + R > N  =>  кворумы пересекаются: чтение задевает хотя бы одну реплику с последней подтверждённой записью (2 + 2 > 3)
 W + R <= N  =>  eventual consistency
 ```
 
+> ⚠️ `W + R > N` — это **не** строгая консистентность (линеаризуемость). При конкурентных записях, last-write-wins по часам с рассинхроном и sloppy quorum (hinted handoff) аномалии возможны. Формулировка для собеседования: «почти всегда видим последнюю запись, но гарантии линеаризуемости нет».
+
 **Cassandra пример:**
 ```sql
--- Write с quorum
-INSERT INTO users (id, name) VALUES (1, 'John') 
-USING CONSISTENCY QUORUM;  -- ждем подтверждения от 2 из 3 узлов
+-- Consistency level задаётся на запрос в драйвере, а в cqlsh — отдельной командой
+-- (синтаксис USING CONSISTENCY удалён ещё в CQL3)
+CONSISTENCY QUORUM;
 
--- Read с quorum
-SELECT * FROM users WHERE id = 1 
-USING CONSISTENCY QUORUM;  -- читаем с 2 из 3 узлов, сравниваем timestamps
+-- Write: ждем подтверждения от 2 из 3 реплик
+INSERT INTO users (id, name) VALUES (1, 'John');
+
+-- Read: читаем с 2 из 3 реплик, берём версию с самым свежим timestamp
+SELECT * FROM users WHERE id = 1;
 ```
 
 ---
@@ -844,16 +891,17 @@ USING CONSISTENCY QUORUM;  -- читаем с 2 из 3 узлов, сравни�
 **Вопрос:** "В чем разница между PostgreSQL с репликацией и Cassandra?"
 
 **Ответ:**
-- **PostgreSQL (CP)**:
-  - Синхронная репликация = strong consistency
-  - Если replica недоступна - write блокируется (consistency > availability)
+- **PostgreSQL (одиночный сервер — вне CAP; кластер с синхронной репликацией — ближе к CP по записи)**:
+  - Синхронная репликация = нет потери подтверждённых записей
+  - Если синхронная replica недоступна - write блокируется (consistency > availability)
+  - Но чтения с реплик при partition продолжаются и могут быть устаревшими, а failover внешний (Patroni), не часть протокола → в CAP PostgreSQL-кластер ложится неидеально
   - ACID транзакции, сложные JOIN
   
 - **Cassandra (AP)**:
   - Eventual consistency (все узлы в конце концов синхронизируются)
   - Узлы могут быть недоступны - система продолжает работать
   - Tunable consistency (можно настроить quorum)
-  - Нет JOIN, нет транзакций
+  - Нет JOIN и ACID-транзакций; есть только lightweight transactions (`IF NOT EXISTS`, на Paxos) для одной партиции
 
 ---
 
@@ -866,8 +914,10 @@ USING CONSISTENCY QUORUM;  -- читаем с 2 из 3 узлов, сравни�
 
 ### Репликация:
 - ✅ Master-Slave для HA и read scaling
-- ✅ Асинхронная vs Синхронная vs Semi-sync
-- ✅ Replication lag - проблема stale reads
+- ✅ Реплика — НЕ бэкап (DELETE/DROP реплицируется мгновенно)
+- ✅ Асинхронная vs Синхронная vs Semi-sync (semi-sync при таймауте молча падает в async)
+- ✅ Синхронная репликация защищает от потери данных, но не от stale reads (кроме `remote_apply`)
+- ✅ Replication lag - проблема stale reads; в Laravel — `'sticky' => true`
 - ✅ Failover: ручной vs автоматический (Patroni, Orchestrator, Sentinel)
 - ✅ Physical vs Logical replication (PostgreSQL)
 
@@ -880,12 +930,14 @@ USING CONSISTENCY QUORUM;  -- читаем с 2 из 3 узлов, сравни�
 ### Шардирование:
 - ✅ Горизонтальное разделение данных между серверами
 - ✅ Range, Hash, Consistent Hashing, Directory-based
-- ✅ Нет JOIN/транзакций между shards
-- ✅ Shard key критичен (hotspots, rehashing)
+- ✅ Нет JOIN/транзакций между shards (из коробки; 2PC блокирующий → Saga)
+- ✅ Shard key критичен (hotspots, rehashing); hash спасает от последовательных id, но не от горячего ключа
+- ✅ Redis Cluster = 16384 hash slots, не consistent hashing
 - ✅ Application-level vs Middleware (Vitess, Citus) vs Built-in (MongoDB)
 
 ### CAP теорема:
-- ✅ В распределенных системах: CP (consistency) или AP (availability)
-- ✅ PostgreSQL с sync replication = CP
+- ✅ При partition выбираем CP (отказать) или AP (ответить, возможно устаревшими данными); не «2 из 3»
+- ✅ A в CAP ≠ high availability
+- ✅ PostgreSQL с sync replication — ближе к CP по записи, но реплики могут отдавать устаревшие чтения
 - ✅ Cassandra = AP с eventual consistency
-- ✅ Quorum: W + R > N = strong consistency
+- ✅ Quorum: W + R > N — кворумы пересекаются, но это не линеаризуемость

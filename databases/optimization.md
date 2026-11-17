@@ -107,6 +107,13 @@ SELECT * FROM users WHERE email = 'test@example.com';
 
 **Цель:** `shared hit` максимальный, `shared read` минимальный.
 
+**Почему нельзя просто увеличить `shared_buffers`:**
+- Память нужна и другим: `work_mem` (на каждую операцию каждого соединения), `maintenance_work_mem`, процессы backend. Нехватка RAM = swap = хуже.
+- Двойное кеширование: страница может лежать и в `shared_buffers`, и в page cache ОС. Поэтому дефолт ~25% RAM, остальное - кешу ОС. Кроме того, `shared read` не всегда означает реальное чтение с диска - данные могут прийти из кеша ОС (`effective_cache_size` сообщает об этом планировщику).
+- Убывающая отдача: если горячий набор данных уже помещается в буфер, дальнейший рост hit ratio не даст. Холодные данные (одноразовый seq scan по большой таблице) дадут `read` при любом размере.
+- Накладные расходы: больше грязных страниц между checkpoint (всплески записи), дороже управление буфером, дольше прогрев после рестарта.
+- Не лечит причину: высокий `read` часто из-за отсутствия индекса (Seq Scan). Сначала индекс и запрос, потом память.
+
 **EXPLAIN с FORMAT JSON:**
 ```sql
 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
@@ -201,7 +208,7 @@ Merge Join  (cost=500.00..1500.00 rows=1000 width=50)
 EXPLAIN
 SELECT u.username, COUNT(p.id) as post_count
 FROM users u
-LEFT JOIN posts p ON u.user_id = p.user_id
+LEFT JOIN posts p ON u.id = p.user_id
 WHERE u.created_at > '2025-01-01'
 GROUP BY u.id, u.username;
 
@@ -316,14 +323,16 @@ SELECT pg_stat_statements_reset();
 ### MySQL: Slow Query Log
 
 **Включить slow query log:**
-```sql
--- В my.cnf (или my.ini):
+```ini
+# В my.cnf (или my.ini):
 [mysqld]
 slow_query_log = 1
 slow_query_log_file = /var/log/mysql/slow-query.log
-long_query_time = 1  -- запросы дольше 1 секунды
-log_queries_not_using_indexes = 1  -- логировать запросы без индексов
+long_query_time = 1                # запросы дольше 1 секунды
+log_queries_not_using_indexes = 1  # логировать запросы без индексов
+```
 
+```sql
 -- Или динамически в runtime:
 SET GLOBAL slow_query_log = 'ON';
 SET GLOBAL long_query_time = 1;
@@ -377,6 +386,99 @@ LIMIT 10;
 -- Сбросить статистику
 TRUNCATE TABLE performance_schema.events_statements_summary_by_digest;
 ```
+
+### Что есть из коробки, а что нужно включать
+
+**PostgreSQL:**
+
+| Источник                     | Статус         |
+|------------------------------|----------------|
+| `pg_stat_user_tables`        | из коробки     |
+| `pg_stat_user_indexes`       | из коробки     |
+| `pg_statio_*`                | из коробки     |
+| `pg_stat_activity`           | из коробки     |
+| `pg_locks`                   | из коробки     |
+| `pg_stat_statements`         | нужно включить |
+| `log_min_duration_statement` | нужно включить |
+| `auto_explain`               | нужно включить |
+
+- `pg_stat_statements`: `shared_preload_libraries` + рестарт + `CREATE EXTENSION`
+- `log_min_duration_statement`: по умолчанию `-1` (выключен), рестарт не нужен
+- `auto_explain`: подключается как расширение, пишет планы медленных запросов в лог
+
+**MySQL:**
+
+| Источник                        | Статус               |
+|---------------------------------|----------------------|
+| Performance Schema (с 5.6.6)    | из коробки           |
+| `sys` schema (с 5.7)            | из коробки           |
+| `information_schema`            | из коробки           |
+| `SHOW GLOBAL STATUS`            | из коробки           |
+| `SHOW PROCESSLIST`              | из коробки           |
+| Slow query log                  | нужно включить       |
+| `log_queries_not_using_indexes` | опционально (шумный) |
+
+- Slow query log: `slow_query_log = ON` (по умолчанию выключен)
+
+Счётчики PostgreSQL копятся с момента последнего `pg_stat_reset()` (или рестарта после краха), поэтому вывод «индекс не используется» делай только на достаточно длинном периоде статистики.
+
+### PostgreSQL: проблемные таблицы и индексы
+
+```sql
+-- Таблицы, где Seq Scan преобладает над Index Scan (кандидаты на индекс)
+SELECT
+    relname AS table_name,
+    seq_scan,
+    seq_tup_read,
+    idx_scan,
+    n_live_tup
+FROM pg_stat_user_tables
+WHERE seq_scan > COALESCE(idx_scan, 0)
+  AND n_live_tup > 10000
+ORDER BY seq_tup_read DESC
+LIMIT 20;
+
+-- Неиспользуемые индексы (не считая тех, что обеспечивают PK/UNIQUE)
+SELECT
+    s.relname AS table_name,
+    s.indexrelname AS index_name,
+    s.idx_scan,
+    pg_size_pretty(pg_relation_size(s.indexrelid)) AS index_size
+FROM pg_stat_user_indexes s
+JOIN pg_index i ON i.indexrelid = s.indexrelid
+WHERE s.idx_scan = 0
+  AND NOT i.indisunique
+ORDER BY pg_relation_size(s.indexrelid) DESC;
+```
+
+Осторожно с удалением: проверь, что статистика не была недавно сброшена, и что индекс не используется только на реплике (там своя статистика).
+
+### MySQL: sys schema (готовые представления)
+
+`sys` построена поверх Performance Schema и отвечает на типовые вопросы без ручных запросов:
+
+```sql
+-- Неиспользуемые индексы
+SELECT * FROM sys.schema_unused_indexes;
+
+-- Дублирующиеся (избыточные) индексы
+SELECT * FROM sys.schema_redundant_indexes;
+
+-- Таблицы, по которым идут полные сканы
+SELECT * FROM sys.schema_tables_with_full_table_scans;
+
+-- Запросы с полным сканом таблицы
+SELECT * FROM sys.statements_with_full_table_scans LIMIT 10;
+
+-- Запросы с временными таблицами на диске и сортировкой без индекса
+SELECT * FROM sys.statements_with_temp_tables LIMIT 10;
+SELECT * FROM sys.statements_with_sorting LIMIT 10;
+
+-- Топ запросов по общему времени
+SELECT * FROM sys.statement_analysis LIMIT 10;
+```
+
+`sys.schema_unused_indexes` строится на `performance_schema.table_io_waits_summary_by_index_usage`, а статистика сбрасывается при рестарте сервера, так что то же правило: смотри после долгого аптайма.
 
 ---
 
@@ -548,14 +650,8 @@ ORDER BY created_at DESC, id DESC
 LIMIT 10;
 -- Вернет id последней записи, например 9876543
 
--- Страница 2 (курсор = 9876543)
-SELECT * FROM posts 
-WHERE created_at <= (SELECT created_at FROM posts WHERE id = 9876543)
-  AND id < 9876543
-ORDER BY created_at DESC, id DESC 
-LIMIT 10;
-
--- Или если created_at не уникален:
+-- Страница 2 (курсор = 9876543), сравнение пары (created_at, id)
+-- работает корректно и когда created_at не уникален:
 SELECT * FROM posts 
 WHERE (created_at, id) < (
     SELECT created_at, id FROM posts WHERE id = 9876543
@@ -603,27 +699,47 @@ if (Post::where('user_id', 123)->count() > 0) { }
 if (Post::where('user_id', 123)->exists()) { }
 ```
 
-### 7. Избегай OR в WHERE (или используй UNION)
+### 7. OR в WHERE и индексы
 
-**Плохо (индексы не используются эффективно):**
+**Суть проблемы:** при `OR` нужны строки, подходящие под *любую* ветку, поэтому **каждая ветка должна уметь использовать индекс сама**. Если хотя бы одна ветка не может, СУБД всё равно придётся пройти всю таблицу, и она выбирает Seq Scan для всего запроса.
+
 ```sql
 SELECT * FROM users 
 WHERE email = 'test@example.com' 
    OR username = 'testuser';
-
--- Даже если есть индексы на email и username, PostgreSQL может выбрать Seq Scan
 ```
 
-**Хорошо (UNION с индексами):**
+**Отдельные индексы на каждую колонку** (`email` и `username`):
+- PostgreSQL может объединить их через **BitmapOr** (два Bitmap Index Scan -> один Bitmap Heap Scan)
+- MySQL может объединить их через **index_merge** (`Using union(...)` в EXPLAIN)
+- Но планировщик не обязан так делать: при плохой оценке селективности, сложных условиях или `ORDER BY ... LIMIT` он может выбрать Seq Scan
+
+**Составной индекс `(email, username)` при OR не помогает:**
+- Ветка `email = ...` использует индекс (левый префикс)
+- Ветка `username = ...` не может: `username` вторая колонка, а условия на `email` в этой ветке нет, значения `username` разбросаны по всему индексу
+- Итог: одна ветка без индекса -> Seq Scan для всего запроса
+- Порядок веток значения не имеет: `username = ... OR email = ...` ведёт себя так же
+
+```sql
+-- индекс (email, username)
+WHERE email = 'a' OR email = 'b'                       -- ок: у обеих веток есть левый префикс
+WHERE email = 'a' OR (email = 'b' AND username = 'x')  -- ок: у обеих веток есть левый префикс
+WHERE email = 'a' OR username = 'x'                    -- плохо: ветка username без email
+```
+
+Правило: составной индекс при OR работает, только если **у каждой ветки есть его левый префикс**. Для веток по разным колонкам нужны отдельные индексы.
+
+**UNION как альтернатива:** каждая часть планируется независимо и идёт через свой индекс, без зависимости от того, как планировщик обработает OR.
 ```sql
 SELECT * FROM users WHERE email = 'test@example.com'
 UNION
 SELECT * FROM users WHERE username = 'testuser';
-
--- Два Index Scan вместо Seq Scan
 ```
+- Тоже подразумевает два отдельных индекса (составной не поможет и здесь)
+- `UNION` убирает дубли (доп. сортировка/hash); `UNION ALL` дешевле, но вернёт строку дважды, если совпали обе ветки
 
-**Или используй IN (для одной колонки):**
+**OR по одной колонке** заменяется на `IN`:
+
 ```sql
 SELECT * FROM users WHERE id IN (1, 2, 3, 4, 5);
 -- Index Scan, эффективно
@@ -750,12 +866,14 @@ VACUUM ANALYZE;
 ```
 
 **Autovacuum (автоматический VACUUM):**
-```sql
--- Включен по умолчанию в postgresql.conf:
+```conf
+# Включен по умолчанию в postgresql.conf:
 autovacuum = on
-autovacuum_max_workers = 3  -- количество параллельных vacuum процессов
-autovacuum_naptime = 1min   -- интервал проверки
+autovacuum_max_workers = 3  # количество параллельных vacuum процессов
+autovacuum_naptime = 1min   # интервал проверки
+```
 
+```sql
 -- Для каждой таблицы autovacuum запускается когда:
 -- dead_tuples > autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor * tuples
 -- По умолчанию: 50 + 0.2 * tuples (20% таблицы изменено)
@@ -928,7 +1046,7 @@ innodb_log_file_size = 1G     # больше = меньше flushing, но до�
 # InnoDB flush method
 innodb_flush_method = O_DIRECT  # Linux: избегает double buffering (OS cache + InnoDB)
 
-# Query cache (DEPRECATED в MySQL 8.0+, не используй!)
+# Query cache (deprecated в 5.7.20, УДАЛЁН в MySQL 8.0 - этих параметров там больше нет)
 # query_cache_type = 0
 # query_cache_size = 0
 ```
@@ -994,7 +1112,7 @@ FROM pg_statio_user_tables;
 ```sql
 SELECT 
     schemaname,
-    tablename,
+    relname as table_name,
     indexrelname,
     idx_scan,           -- сколько раз индекс использован
     idx_tup_read,       -- строк прочитано через индекс
@@ -1009,8 +1127,8 @@ ORDER BY idx_scan;
 ```sql
 SELECT 
     schemaname,
-    tablename,
-    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as total_size,
+    relname as table_name,
+    pg_size_pretty(pg_total_relation_size(relid)) as total_size,
     n_dead_tup,
     n_live_tup,
     round(n_dead_tup::numeric / NULLIF(n_live_tup, 0) * 100, 2) as dead_ratio
@@ -1111,7 +1229,7 @@ LIMIT 20;
 
 ---
 
-## �️ Архитектура подключений: PostgreSQL vs MySQL
+## 🔌 Архитектура подключений: PostgreSQL vs MySQL
 
 ### Модели обработки подключений
 
@@ -1146,12 +1264,12 @@ LIMIT 20;
 ```
 
 **Характеристики:**
-- 🔒 **Изоляция** - полная изоляция памяти, сбой в одном процессе не затронет другие
-- 💾 **Память** - каждый процесс имеет свой work_mem, temp_buffers и кеш данных
+- 🔒 **Изоляция** - приватная память процесса (work_mem и др.), ошибка в запросе затрагивает только его backend. Но при аварийном падении backend (например, segfault) postmaster перезапускает все соединения и запускает crash recovery
+- 💾 **Память** - у каждого процесса свои work_mem и temp_buffers; shared_buffers (кеш данных) при этом общий для всех процессов (shared memory)
 - 🐌 **Создание** - fork() относительно медленный (копирование адресного пространства)
 - 🔄 **Переключение** - context switch между процессами дороже, чем между потоками
 - 📊 **Overhead** - больше потребление памяти на подключение (~10MB базовый overhead)
-- 🛡️ **Надежность** - крах одного backend не ронит весь сервер
+- 🛡️ **Надежность** - ошибка в одном запросе не влияет на другие; при аварийном крахе backend все соединения сбрасываются (crash recovery), данные остаются целыми благодаря WAL
 
 #### MySQL: потоки (threads)
 
@@ -1177,7 +1295,7 @@ LIMIT 20;
 - 💾 **Память** - меньше overhead на подключение (~256KB - 1MB)
 - 🔄 **Переключение** - быстрое переключение контекста между потоками
 - 🤝 **Общая память** - эффективное использование InnoDB buffer pool
-- ⚠️ **Изоляция** - баг в одном потоке может повлиять на весь сервер
+- ⚠️ **Изоляция** - аварийное падение любого потока (segfault) убивает весь процесс mysqld; обычные ошибки запросов затрагивают только своё соединение
 - 🧵 **Синхронизация** - необходимость в mutex/locks для доступа к общей памяти
 
 ### Преимущества и недостатки
@@ -1185,11 +1303,11 @@ LIMIT 20;
 #### PostgreSQL (процессы)
 
 **Преимущества:**
-- ✅ **Надежность** - полная изоляция, сбой в запросе не роняет сервер
+- ✅ **Надежность** - изоляция процессов, ошибка в запросе не роняет сервер (аварийный крах backend сбрасывает все соединения, но данные целы благодаря WAL)
 - ✅ **Безопасность** - память одного клиента не может быть прочитана другим
 - ✅ **Предсказуемость** - каждый процесс имеет гарантированную память
 - ✅ **Отладка** - легко подключиться к процессу (gdb -p PID)
-- ✅ **Убить** - можно убить зависший запрос без последствий для других
+- ✅ **Убить** - зависший запрос можно остановить без последствий для других (`pg_cancel_backend` / `pg_terminate_backend`)
 
 **Недостатки:**
 - ❌ **Memory overhead** - каждый процесс ~10MB базового потребления
@@ -1207,10 +1325,26 @@ LIMIT 20;
 - ✅ **Память** - эффективное использование shared buffer pool
 
 **Недостатки:**
-- ❌ **Изоляция** - баг в коде может повлиять на весь сервер
+- ❌ **Изоляция** - аварийное падение любого потока (баг сервера, плагина, UDF) убивает весь процесс mysqld
 - ❌ **Отладка** - сложнее отлаживать многопоточный код
 - ❌ **Конкуренция** - mutex contention при высокой нагрузке
-- ❌ **Убить поток** - нельзя просто kill -9, может сломать сервер
+
+### Что на практике роняет сервер
+
+Разница между моделями меньше, чем кажется: при настоящей аварии клиенты в обеих СУБД теряют соединения, и идёт crash recovery (WAL / redo log). Обычные ошибки запросов (синтаксис, deadlock, нарушение ограничений) не роняют ничего ни там, ни там.
+
+**PostgreSQL (падает backend-процесс):**
+- Баг в расширении на C (PostGIS, сторонние `.so` модули) или в самом сервере (segfault)
+- OOM killer убил backend (SIGKILL)
+- PANIC (не удалось записать WAL, обнаружена порча данных)
+- Процессы делят `shared_buffers`, поэтому после аварийного выхода backend postmaster не может быть уверен в целостности shared memory и **перезапускает все backend'ы** (в логе: `terminating any other active server processes`)
+
+**MySQL (падает весь mysqld):**
+- Баг в сервере, плагине или UDF (пользовательская функция на C)
+- Намеренная остановка InnoDB: `InnoDB: Assertion failure` при обнаружении порчи, либо `semaphore wait has lasted > 600 seconds`
+- OOM killer: при большом `innodb_buffer_pool_size` mysqld самый большой процесс и типичная жертва
+
+Реальное преимущество процессной модели PostgreSQL: можно штатно остановить один зависший запрос или соединение, не рискуя остальными. Но от аварийного рестарта всех соединений она не защищает.
 
 ### Как это влияет на разработчика
 
@@ -1225,7 +1359,7 @@ $pdo->query('SELECT * FROM users');
 
 // С PgBouncer (connection pooler) - правильно!
 // .env
-DATABASE_URL=pgsql://user:pass@localhost:6432/mydb  // 6432 = PgBouncer
+DATABASE_URL=pgsql://user:pass@localhost:6432/mydb  # 6432 = PgBouncer
 
 // Конфиг Laravel с пулом из 20 соединений:
 // PgBouncer переиспользует процессы PostgreSQL
@@ -1283,16 +1417,16 @@ WHERE state = 'active' AND query_start < NOW() - INTERVAL '5 minutes';
 
 **MySQL:**
 ```sql
--- Убить поток сложнее, нужно быть осторожным
-KILL QUERY 12345;  -- Убить только запрос
-KILL CONNECTION 12345;  -- Убить соединение
+KILL QUERY 12345;       -- остановить только запрос, соединение остаётся
+KILL CONNECTION 12345;  -- закрыть соединение (откатит его открытую транзакцию)
 
--- В редких случаях может повлиять на стабильность сервера
+-- Обе команды штатные и безопасные для остальных соединений
 ```
 
 **Вывод для разработчика:**
-- PostgreSQL безопаснее убивать зависшие запросы
-- MySQL требует осторожности при kill operations
+- В обеих СУБД зависший запрос или соединение останавливается штатной командой (`pg_cancel_backend` / `pg_terminate_backend`, `KILL QUERY` / `KILL CONNECTION`), остальные не страдают
+- Нельзя делать `kill -9` самому процессу сервера (postgres backend или mysqld): в PostgreSQL это перезапустит все соединения, в MySQL уронит сервер
+- Откат убитой долгой транзакции может занять заметное время
 
 #### 4. Мониторинг
 
@@ -1352,7 +1486,7 @@ sort_buffer_size = 256KB  -- на поток
 3. **Обе СУБД:**
    - ✅ В Laravel: правильно настроить database connections pool
    - ✅ Закрывать неиспользуемые подключения
-   - ✅ Использовать persistent connections с умом (не всегда хорошо!)
+   - ⚠️ Persistent connections (`PDO::ATTR_PERSISTENT`) используй осторожно: это не пул, а одно постоянное соединение на воркер FPM (расходует `max_connections`); состояние сессии (незавершённая транзакция, temp-таблицы, `SET`) может «протечь» в следующий запрос; соединение может оборваться по таймауту (`gone away`); с PgBouncer не нужно
 
 #### Laravel конфигурация:
 
@@ -1385,28 +1519,27 @@ sort_buffer_size = 256KB  -- на поток
 
 **ДА, касается! Вот как:**
 
-1. **Connection Pooling** - для PostgreSQL это не опция, а необходимость
-2. **Лимиты подключений** - нужно понимать, сколько можно держать
+1. **Connection Pooling** - для PostgreSQL становится необходим, когда соединений сотни и больше
+2. **Лимиты подключений** - нужно понимать, сколько можно держать (воркеры FPM + очереди + cron, умноженные на число серверов)
 3. **Архитектура приложения** - короткие транзакции, правильный пулинг
 4. **Масштабирование** - PostgreSQL требует больше внимания к connections
-5. **Отладка** - разные подходы к убийству зависших запросов
-6. **Memory planning** - PostgreSQL требует больше памяти на подключение
+5. **Memory planning** - PostgreSQL требует больше памяти на подключение
 
 **Простыми словами:**
-- **PostgreSQL** - надежнее, но требует PgBouncer в production
-- **MySQL** - легче масштабируется на много подключений, но менее изолирован
-- Для типичного Laravel-приложения разница не критична, если настроить пулинг правильно
-- Но на высоких нагрузках (тысячи RPS) эта разница становится заметной
+- **PostgreSQL** - процесс на соединение, при сотнях и тысячах одновременных клиентов нужен пулер (PgBouncer)
+- **MySQL** - поток на соединение, легче по ресурсам, но пулер (ProxySQL) тоже полезен при большом числе клиентов
+- Для типичного Laravel-приложения разница не критична
+- Разница зависит не от RPS, а от числа **одновременных соединений** (тысячи RPS на коротких запросах могут обслуживаться десятком соединений)
 
 **Что делать разработчику:**
-1. Используй PgBouncer для PostgreSQL - всегда, без исключений
+1. Посчитай бюджет соединений; при большом числе клиентов ставь пулер (PgBouncer для PostgreSQL)
 2. Не держи долгие транзакции открытыми
 3. Следи за количеством активных подключений (мониторинг!)
 4. Знай лимиты своей БД и настраивай connection pool адекватно
 
 ---
 
-## �🎓 Checklist для оптимизации
+## 🎓 Checklist для оптимизации
 
 ### Перед оптимизацией:
 - ✅ Определить медленные запросы (slow query log, pg_stat_statements)

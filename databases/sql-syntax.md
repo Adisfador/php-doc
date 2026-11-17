@@ -376,6 +376,42 @@ LEFT JOIN orders o ON u.id = o.user_id
 GROUP BY u.id, u.name;
 ```
 
+### Порядок выполнения SELECT (логический)
+
+Порядок, в котором СУБД логически обрабатывает запрос, **не совпадает с порядком написания**:
+
+```
+1. FROM / JOIN      - берём таблицы, соединяем (здесь появляются имена и алиасы таблиц)
+2. WHERE            - фильтруем строки
+3. GROUP BY         - группируем
+4. HAVING           - фильтруем группы
+5. SELECT           - вычисляем выражения, алиасы колонок, оконные функции
+6. DISTINCT         - убираем дубли
+7. ORDER BY         - сортируем
+8. LIMIT / OFFSET   - отрезаем
+```
+
+**Следствия:**
+```sql
+-- ❌ Алиас из SELECT в WHERE: WHERE выполняется раньше SELECT
+SELECT price * qty AS total FROM order_items WHERE total > 100;
+
+-- ✅ Повторить выражение или обернуть в подзапрос/CTE
+SELECT price * qty AS total FROM order_items WHERE price * qty > 100;
+
+-- ❌ Агрегат в WHERE: группировки ещё нет
+SELECT user_id FROM orders WHERE COUNT(*) > 5 GROUP BY user_id;
+
+-- ✅ HAVING
+SELECT user_id FROM orders GROUP BY user_id HAVING COUNT(*) > 5;
+
+-- ❌ Оконная функция в WHERE: считается на шаге SELECT
+-- ✅ Подзапрос или CTE, фильтр снаружи
+```
+- Алиас SELECT можно использовать в `ORDER BY` (он выполняется после SELECT)
+- В `GROUP BY` и `HAVING` алиасы зависят от СУБД: MySQL разрешает, PostgreSQL разрешает в `GROUP BY`, но не в `HAVING`
+- Это **логический** порядок: реальный план выполнения оптимизатор может менять (например, применять фильтры раньше)
+
 ### HAVING - Фильтрация групп
 
 **WHERE фильтрует строки ДО группировки, HAVING - ПОСЛЕ.**

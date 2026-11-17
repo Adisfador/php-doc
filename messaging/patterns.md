@@ -1350,6 +1350,64 @@ class OrderSagaOrchestrator
 
 ---
 
+### 11. Transactional Outbox
+
+**Проблема (dual write):** нужно изменить данные в БД и отправить событие в брокер. Это два разных хранилища, атомарно записать в оба нельзя.
+
+```php
+DB::transaction(fn () => Order::create($data));
+$broker->publish('order.created', ...); // упало здесь → заказ есть, события нет
+// если поменять порядок: событие ушло, а транзакция откатилась
+```
+
+**Решение:** событие пишется **в ту же БД и в той же транзакции**, что и данные, в таблицу `outbox`. Отдельный процесс (relay) читает неотправленные записи и публикует их в брокер.
+
+```php
+// 1. Бизнес-транзакция: данные + событие атомарно
+DB::transaction(function () use ($data) {
+    $order = Order::create($data);
+
+    Outbox::create([
+        'type'    => 'order.created',
+        'payload' => json_encode(['order_id' => $order->id]),
+    ]);
+});
+```
+
+```php
+// 2. Relay-воркер (команда в цикле / планировщик)
+DB::transaction(function () use ($broker) {
+    $rows = Outbox::whereNull('sent_at')
+        ->orderBy('id')
+        ->limit(100)
+        ->lockForUpdate()       // + SKIP LOCKED: несколько воркеров не мешают друг другу
+        ->get();
+
+    foreach ($rows as $row) {
+        $broker->publish($row->type, $row->payload);
+        $row->update(['sent_at' => now()]);
+    }
+});
+```
+
+```sql
+-- SKIP LOCKED (PostgreSQL 9.5+, MySQL 8.0+)
+SELECT * FROM outbox WHERE sent_at IS NULL ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED;
+```
+
+**Особенности:**
+- Гарантия **at-least-once**: если воркер упал после `publish`, но до `update`, событие уйдёт повторно → **потребитель обязан быть идемпотентным** (хранить id обработанных событий / unique constraint)
+- Порядок: читаем по возрастанию `id`; порядок гарантирован только для одного воркера (или нужно партиционирование по ключу агрегата)
+- Старые отправленные записи нужно чистить (cron: удалять `sent_at < now() - interval`)
+- Индекс по `(sent_at, id)` или частичный индекс на неотправленные, иначе relay будет сканировать таблицу
+- Альтернатива опросу таблицы — **CDC** (Debezium читает WAL/binlog и публикует изменения таблицы `outbox` в Kafka): меньше задержка и нагрузка на БД, но сложнее инфраструктура
+
+**Связь с Saga:** каждому шагу саги нужно надёжно отправить событие следующему шагу — для этого каждый сервис пишет результат шага и событие в `outbox` одной транзакцией.
+
+**Outbox vs 2PC:** 2PC (`PREPARE TRANSACTION`) даёт атомарность между системами, но держит локи и требует координатор. Outbox обходится локальной транзакцией, цена — eventual consistency и дубликаты.
+
+---
+
 ## 🎓 Best Practices
 
 1. **Idempotency** - всегда обрабатывай сообщения идемпотентно
@@ -1362,6 +1420,7 @@ class OrderSagaOrchestrator
 8. **Message TTL** - для временных данных
 9. **Correlation ID** - для трейсинга distributed requests
 10. **Saga pattern** - для распределенных транзакций
+11. **Transactional Outbox** - событие пишем в БД в той же транзакции, что и данные; relay доставляет в брокер
 
 ---
 
@@ -1374,6 +1433,7 @@ class OrderSagaOrchestrator
 5. **Reliability** - at-least-once, idempotency, DLQ, retry
 6. **Saga** - choreography vs orchestration, compensating transactions
 7. **Idempotency** - unique constraints, deduplication cache
+7a. **Outbox** - решает dual write: событие в таблицу `outbox` той же транзакцией, relay (`FOR UPDATE SKIP LOCKED`) публикует в брокер; at-least-once → потребитель идемпотентен; альтернатива — CDC (Debezium)
 8. **Circuit breaker** - предотвращение cascade failures
 9. **Message transformation** - translator, enricher, normalizer
 10. **Kafka vs RabbitMQ** - streaming vs messaging, retention

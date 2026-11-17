@@ -378,9 +378,9 @@ Request 1 → берёт connection #1 → возвращает
 Request 2 → берёт connection #1 (переиспользует)
 ```
 
-**Laravel автоматически использует persistent connections.**
+**По умолчанию Laravel persistent connections НЕ использует** (соединение закрывается в конце запроса). Включается вручную; это не общий пул, а одно постоянное соединение на воркер PHP-FPM. Для настоящего пулинга нужен PgBouncer / ProxySQL.
 
-### Настройка:
+### Настройка persistent (осторожно):
 ```php
 // config/database.php
 'mysql' => [

@@ -25,18 +25,29 @@
 **CAP треугольник** - можно выбрать только 2 из 3:
 - **C**onsistency - согласованность (все видят одинаковые данные)
 - **A**vailability - доступность (система всегда отвечает)
-- **P**artition tolerance - устойчивость к разделению сети
+- **P**artition tolerance - устойчивость к разделению сети (система продолжает работать, когда узлы потеряли связь друг с другом)
+
+**Почему P - не "бонус", а данность:**
+- P - это не "система распределённая", а "система переживает обрыв связи между своими узлами"
+- Сам по себе P ничего не даёт пользователю - он описывает, что система **не развалилась**, когда сеть порвалась
+- Как только серверов больше одного (реплики, шарды, дата-центры) - обрыв сети рано или поздно **случится** (упал свитч, лаг между ДЦ, GC-пауза выглядит как недоступность)
+- Отказаться от P в распределённой системе нельзя - это значит "при любом сетевом сбое вся система ложится"
+- Поэтому реальный вопрос CAP: **что жертвуем в момент разрыва - C или A?**
+
+**Пример:** 2 узла (Москва и Франкфурт), связь между ними пропала, клиент пишет в Москву:
+- **CP** - Москва отказывает в записи (ошибка/таймаут), т.к. не может синхронизироваться с Франкфуртом → данные согласованы, но система недоступна
+- **AP** - Москва принимает запись, Франкфурт продолжает отдавать старые данные → система отвечает, но узлы временно расходятся (потом синхронизируются - eventual consistency)
 
 **Примеры:**
 - **CA** - традиционные RDBMS (PostgreSQL, MySQL) в single-node
-- **CP** - MongoDB, HBase, Redis Cluster (consistency > availability)
+- **CP** - MongoDB, HBase (consistency > availability). Redis Cluster строгим CP не является: асинхронная репликация, при failover возможна потеря подтверждённых записей
 - **AP** - Cassandra, DynamoDB, Riak (availability > consistency)
 
 **В реальности:**
 - Partition (разделение сети) неизбежно в распределенных системах
 - Выбор всегда между **CP** или **AP**
-- SQL обычно **CP** (синхронная/асинхронная репликация)
-- NoSQL делится: **CP** (MongoDB, HBase, Redis Cluster) и **AP** (Cassandra, DynamoDB) с eventual consistency
+- SQL при синхронной репликации тяготеет к **CP**; при асинхронной - согласованность между репликами eventual
+- NoSQL делится: **CP** (MongoDB, HBase) и **AP** (Cassandra, DynamoDB) с eventual consistency
 
 ---
 
@@ -125,7 +136,7 @@ LRANGE logs 0 -1  # все элементы ["log1", "log2", "log3"]
 LRANGE logs 0 1  # первые 2 ["log1", "log2"]
 
 # LTRIM - обрезать список (сохранить только диапазон)
-LTRIM logs 0 99  # сохранить последние 100 элементов
+LTRIM logs -100 -1  # сохранить последние 100 элементов (0 99 оставил бы первые 100)
 
 # BLPOP - блокирующий POP (для очередей)
 BLPOP queue:tasks 0  # ждать бесконечно пока не появится элемент
@@ -221,7 +232,8 @@ ZCARD leaderboard  # 3
 **Laravel example:**
 ```php
 // Rate limiting с Sorted Set
-Redis::zadd("rate_limit:user:123", time(), request()->ip());
+// member должен быть уникальным, иначе повторные запросы перезапишут друг друга
+Redis::zadd("rate_limit:user:123", microtime(true), uniqid('', true));
 // Удалить старые записи (> 1 минуты назад)
 Redis::zremrangebyscore("rate_limit:user:123", 0, time() - 60);
 // Проверить количество за последнюю минуту
@@ -284,25 +296,48 @@ aof-use-rdb-preamble yes  # AOF файл с RDB snapshot + новые коман
 
 ### Репликация и Redis Cluster
 
-**Master-Slave репликация:**
-```redis
-# На slave сервере:
-replicaof 192.168.1.1 6379  # IP и порт master
+Это **два альтернативных режима**, а не слои одной схемы:
 
-# Master автоматически синхронизирует данные на slaves
-# Slaves - read-only по умолчанию
+|          | Replication + Sentinel                        | Redis Cluster                                  |
+| -------- | --------------------------------------------- | ---------------------------------------------- |
+| Данные   | Все на одном master, реплики - полные копии   | Поделены между несколькими master              |
+| Запись   | Один master                                   | Несколько master, каждый - свои слоты          |
+| Failover | Отдельные процессы Sentinel                   | Встроен (голосуют master'ы)                    |
+| Зачем    | Отказоустойчивость (+ чтение, если настроить) | Объём данных и запись не влезают в один сервер |
+
+**Replication + Sentinel:**
+```redis
+# На каждой реплике:
+replicaof 192.168.1.1 6379  # IP и порт master
+```
+- Master асинхронно шлёт поток команд репликам
+- Реплики read-only = **запись запрещена, читать можно**. Но Redis сам чтение не распределяет - приложение должно явно слать чтение на реплики (данные могут отставать)
+- **Sentinel - отдельный процесс** (`redis-sentinel`, тот же пакет), минимум 3 штуки для голосования большинством
+- Sentinel следят за master, при падении промотят реплику; клиент сначала спрашивает у Sentinel "кто сейчас master?"
+
+**Redis Cluster - шардирование + репликация:**
+- Ключ → слот: `CRC16(имя ключа) % 16384` - **автоматически для любых ключей**, настраивать ничего не нужно
+- Минимум 3 master (рекомендуется 6: 3 master + 3 replica)
+- Реплики по умолчанию - **горячий резерв**: на чтение отвечают `MOVED` к master. Читать с них - только после `READONLY` в соединении
+- Клиент должен уметь в кластер: не та нода → `MOVED 3999 10.0.0.2:6379` → редирект (phpredis `RedisCluster`, Predis умеют)
+- Нет multi-key операций, если ключи в разных слотах
+- Добавили ноду → перенести слоты вручную: `redis-cli --cluster reshard` / `rebalance` (кластер работает во время переноса)
+
+```bash
+# 1. На каждом из 6 серверов: cluster-enabled yes в redis.conf → запустить redis-server
+# 2. ОДИН раз с любой машины, видящей все ноды:
+redis-cli --cluster create \
+  10.0.0.1:6379 10.0.0.2:6379 10.0.0.3:6379 \
+  10.0.0.4:6379 10.0.0.5:6379 10.0.0.6:6379 \
+  --cluster-replicas 1
+# Состояние кластера каждая нода хранит в nodes.conf
 ```
 
-**Redis Sentinel - автоматический failover:**
-- Мониторит master и slaves
-- Автоматически промотит slave в master при падении
-- Уведомляет клиентов о новом master
-
-**Redis Cluster - горизонтальное шардирование:**
-- 16384 hash slots, распределены между узлами
-- Автоматический sharding по ключам
-- Минимум 3 master узла (рекомендуется 6: 3 master + 3 replica)
-- Нет поддержки multi-key операций (если ключи на разных узлах)
+**CAP: ни CP, ни AP** (и Cluster, и Sentinel):
+- Не C: репликация асинхронная → master подтвердил запись и упал до репликации → после failover запись потеряна
+- Не A: master в меньшинстве перестаёт принимать запись после `cluster-node-timeout`
+- Уменьшить окно потерь: `min-replicas-to-write 1`, `WAIT 1 100` - но это не делает Redis CP
+- Поэтому Redis - для кеша, сессий, очередей, счётчиков, а не для денег
 
 ```redis
 # Hash tags для multi-key операций в Cluster
@@ -374,7 +409,7 @@ broadcast(new OrderShipped($order));
 ```php
 use Illuminate\Support\Facades\RateLimiter;
 
-// Sorted Set под капотом
+// Под капотом Cache: increment + TTL (не Sorted Set)
 RateLimiter::attempt(
     'send-message:'.$user->id,
     $perMinute = 5,
@@ -511,9 +546,13 @@ db.users.updateOne(
   {
     $inc: { age: 1 },                   // age + 1
     $push: { tags: "new-tag" },          // добавить в массив
-    $addToSet: { tags: "unique-tag" },   // добавить только если нет
     $unset: { old_field: "" }            // удалить поле
   }
+)
+// $push и $addToSet на одно поле в одном update нельзя (conflict) - отдельный запрос:
+db.users.updateOne(
+  { _id: ObjectId("...") },
+  { $addToSet: { tags: "unique-tag" } }  // добавить только если нет
 )
 
 // replaceOne - заменить весь документ
@@ -694,6 +733,7 @@ sh.enableSharding("mydb")
 // Выбрать shard key и создать sharded collection
 sh.shardCollection("mydb.users", { "city": 1 })
 // Документы с одинаковым city попадут на один shard
+// (антипример: низкая кардинальность -> "горячие" шарды)
 
 // Или hash-based sharding (равномерное распределение)
 sh.shardCollection("mydb.users", { "_id": "hashed" })
@@ -702,7 +742,7 @@ sh.shardCollection("mydb.users", { "_id": "hashed" })
 **Выбор shard key критичен:**
 - ✅ Равномерное распределение данных
 - ✅ Запросы содержат shard key (иначе broadcast на все шарды)
-- ❌ Нельзя изменить после sharding (только пересоздать коллекцию)
+- ⚠️ Менять shard key тяжело: с 4.4 можно дополнить (`refineCollectionShardKey`), с 5.0 есть `reshardCollection` (дорогая операция)
 
 ### MongoDB в PHP/Laravel
 
@@ -734,9 +774,9 @@ $collection->updateOne(
 );
 ```
 
-**Laravel MongoDB (jenssegers/mongodb):**
+**Laravel MongoDB (mongodb/laravel-mongodb; бывший jenssegers/mongodb, заброшен):**
 ```php
-// composer require jenssegers/mongodb
+// composer require mongodb/laravel-mongodb
 
 // config/database.php
 'mongodb' => [
@@ -749,7 +789,7 @@ $collection->updateOne(
 ],
 
 // Model
-use Jenssegers\Mongodb\Eloquent\Model;
+use MongoDB\Laravel\Eloquent\Model;
 
 class User extends Model
 {
@@ -861,7 +901,7 @@ TTL date + INTERVAL 90 DAY;  -- удалить данные старше 90 дн
 ```
 
 **ORDER BY = Primary Key** (в MergeTree):
-- Индекс строится по первым 8192 строкам каждого блока (granule)
+- Одна запись индекса на каждые 8192 строк (granule) - значение ORDER BY первой строки гранулы
 - Sparse index (разреженный) - не на каждую строку, а на блоки
 - Быстрый поиск по ORDER BY колонкам
 
@@ -873,7 +913,7 @@ TTL date + INTERVAL 90 DAY;  -- удалить данные старше 90 дн
 SELECT 
     toDate(created_at) as date,
     COUNT(*) as page_views,
-    uniq(user_id) as unique_users  -- приблизительный COUNT DISTINCT (HyperLogLog)
+    uniq(user_id) as unique_users  -- приблизительный COUNT DISTINCT (adaptive sampling; uniqHLL12 - HyperLogLog, uniqExact - точный)
 FROM events
 WHERE created_at >= '2026-01-01'
 GROUP BY date
@@ -932,8 +972,8 @@ ORDER BY hour;
 CREATE TABLE daily_stats (
     date Date,
     page String,
-    page_views UInt64,
-    unique_users AggregateFunction(uniq, UInt64)
+    page_views SimpleAggregateFunction(sum, UInt64),  -- иначе при merge не суммируется
+    unique_users AggregateFunction(uniq, UInt32)      -- тип совпадает с events.user_id
 ) ENGINE = AggregatingMergeTree()
 ORDER BY (date, page);
 
@@ -966,7 +1006,7 @@ CREATE TABLE events_replica (
     date Date,
     user_id UInt32,
     event_type String
-) ENGINE = ReplicatedMergeTree('/clickhouse/tables/events', '{replica}')
+) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/events', '{replica}')
 PARTITION BY toYYYYMM(date)
 ORDER BY (date, user_id);
 
@@ -1040,7 +1080,7 @@ PUT /users
   "mappings": {
     "properties": {
       "name": { "type": "text" },        // полнотекстовый поиск
-      "email": { "type": "keyword" },    // exact match, aggregations
+      "email": { "type": "keyword" },    // exact match, aggregations (подполя .keyword нет!)
       "age": { "type": "integer" },
       "skills": { "type": "text" }
     }
@@ -1055,6 +1095,76 @@ PUT /users
 - **date** - даты
 - **boolean** - true/false
 - **geo_point**, **geo_shape** - геоданные
+
+**Mapping - это не "какие поля разрешены", а "как индексировать поле":**
+- Без явного mapping ES угадывает типы по первому документу (dynamic mapping): строка → `text` + подполе `.keyword`
+- Лишние поля по умолчанию добавляются сами; запретить - `"dynamic": "strict"`
+- Тип/анализатор существующего поля **изменить нельзя** → новый индекс + `_reindex`. Добавлять новые поля можно
+
+### Создание индекса
+
+`POST /users/_doc/1` создаст индекс автоматически, но с дефолтными настройками и угаданными типами (`"age": "30"` строкой → `text`). В проекте индекс создают **явно** (шарды, анализаторы задаются только при создании) или через **index template** для автосоздаваемых индексов (`logs-*`).
+
+**Анализатор** - цепочка обработки текста перед индексацией:
+```
+"Разработчики PHP!" → char_filter (чистка) → tokenizer (слова) → filters
+  lowercase → stop (убрать "и", "в") → synonyms → stemmer → ["разработчик", "php"]
+```
+Стеммер даёт морфологию: "разработчик" найдёт "разработчиков".
+
+```json
+PUT /vacancies
+{
+  "settings": {
+    "number_of_shards": 1,
+    "analysis": {
+      "filter": {
+        "ru_stop":     { "type": "stop", "stopwords": "_russian_" },
+        "ru_stemmer":  { "type": "stemmer", "language": "russian" },
+        "my_synonyms": { "type": "synonym", "synonyms": ["php, пхп", "js, javascript"] }
+      },
+      "analyzer": {
+        "ru_text": {
+          "tokenizer": "standard",
+          "filter": ["lowercase", "ru_stop", "my_synonyms", "ru_stemmer"]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "title":  {
+        "type": "text", "analyzer": "ru_text",
+        "fields": { "raw": { "type": "keyword" } }   // title.raw - точный поиск/сортировка
+      },
+      "city":   { "type": "keyword" },
+      "salary": { "type": "integer" }
+    }
+  }
+}
+```
+Попроще - встроенный `"analyzer": "russian"`.
+
+- **Опечатки** - не в индексе, а в запросе: `"match": { "title": { "query": "разрабочик", "fuzziness": "AUTO" } }`
+- **Автодополнение** - в индексе: тип `search_as_you_type` или анализатор `edge_ngram` (префиксы "ра", "раз", "разр"...)
+
+### Индексы внутри индекса
+
+`CREATE INDEX` нет - **индексируется всё автоматически**, структура зависит от типа:
+
+| Тип              | Структура                                       | Для чего                            |
+| ---------------- | ----------------------------------------------- | ----------------------------------- |
+| `text`           | Инвертированный индекс (слово → документы)      | Полнотекстовый поиск                |
+| `keyword`        | Инвертированный индекс + doc_values (колоночно) | Точный поиск, сортировка, агрегации |
+| числа, даты, geo | BKD-дерево                                      | Диапазоны, гео                      |
+
+Логика **обратная SQL** - не добавляешь индексы, а отключаешь лишнее (экономия диска, быстрее запись):
+```json
+"description": { "type": "text", "index": false },       // хранится, но не ищется
+"tags":        { "type": "keyword", "doc_values": false }, // без сортировки/агрегаций
+"raw_payload": { "type": "object", "enabled": false }     // просто хранить, не разбирать
+```
+`index.sort.field` - физический порядок документов на диске (отдалённый аналог кластерного индекса).
 
 ### CRUD операции
 
@@ -1128,7 +1238,7 @@ GET /users/_search
 {
   "query": {
     "term": {
-      "email.keyword": "john@example.com"  // точное совпадение
+      "email": "john@example.com"  // точное совпадение (email - keyword; для text-поля было бы email.keyword)
     }
   }
 }
@@ -1250,9 +1360,10 @@ GET /orders/_search
 
 ### Relevance и Scoring
 
-**TF-IDF (Term Frequency - Inverse Document Frequency):**
+**BM25 (с Elasticsearch 5.0; ранее TF-IDF):**
 - Документы ранжируются по релевантности
-- Частота термина в документе (TF) vs редкость термина в индексе (IDF)
+- Основан на идее TF-IDF: частота термина в документе (TF) vs редкость термина в индексе (IDF)
+- BM25 добавляет насыщение TF и нормализацию по длине поля
 
 ```json
 // Поиск с объяснением score
@@ -1360,20 +1471,20 @@ php artisan scout:import "App\Models\Post"
 
 ## 📊 Сравнение NoSQL решений
 
-| Аспект | Redis | MongoDB | ClickHouse | Elasticsearch |
-|--------|-------|---------|------------|---------------|
-| **Тип** | Key-Value, In-Memory | Document | Columnar | Document, Search |
-| **Схема** | Schema-less | Flexible schema | Fixed schema | Dynamic mapping |
-| **Persistence** | RDB/AOF | BSON files | MergeTree parts | Lucene segments |
-| **Скорость записи** | ⚡⚡⚡ Очень высокая | ⚡⚡ Высокая | ⚡⚡ Высокая (batch) | ⚡ Средняя |
-| **Скорость чтения** | ⚡⚡⚡ Мгновенная | ⚡⚡ Быстрая | ⚡⚡⚡ Аналитика быстрая | ⚡⚡ Поиск быстрый |
-| **Масштабирование** | Cluster, sharding | Sharding, replica sets | Sharding | Sharding |
-| **Транзакции** | ❌ Нет (атомарные операции) | ✅ ACID с 4.0 | ❌ Нет | ❌ Нет |
-| **JOIN** | ❌ Нет | ⚠️ Ограничен ($lookup) | ⚠️ Ограничен | ❌ Нет |
-| **Full-text search** | ❌ Нет | ⚠️ Базовый | ❌ Нет | ✅ Лучший |
-| **Use cases** | Cache, sessions, queues, pub/sub | Flexible data, catalogs, CMS | Analytics, logs, metrics | Search, autocomplete, logs |
-| **RAM usage** | ⚡⚡⚡ Все в RAM | ⚡ Indexes в RAM | ⚡ Minimal | ⚡⚡ Indexes в RAM |
-| **Размер данных** | ⚠️ Ограничен RAM | ✅ Терабайты | ✅ Петабайты | ✅ Терабайты |
+| Аспект               | Redis                                       | MongoDB                                        | ClickHouse                                            | Elasticsearch                   |
+| -------------------- | ------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------- | ------------------------------- |
+| **Тип**              | Key-Value, In-Memory                        | Document                                       | Columnar                                              | Document, Search                |
+| **Схема**            | Schema-less                                 | Flexible schema                                | Fixed schema                                          | Dynamic mapping                 |
+| **Persistence**      | RDB/AOF                                     | WiredTiger + journal                           | MergeTree parts                                       | Lucene segments                 |
+| **Скорость записи**  | ⚡⚡⚡ Очень высокая                        | ⚡⚡ Высокая                                   | ⚡⚡ Высокая (batch)                                  | ⚡ Средняя                      |
+| **Скорость чтения**  | ⚡⚡⚡ Мгновенная                           | ⚡⚡ Быстрая                                   | ⚡⚡⚡ Аналитика быстрая                              | ⚡⚡ Поиск быстрый              |
+| **Масштабирование**  | Replication + Sentinel, Cluster             | Replica sets, sharding                         | Shards + ReplicatedMergeTree                          | Shards + replicas               |
+| **Транзакции**       | ⚠️ MULTI/EXEC, Lua (изоляция без rollback)  | ✅ ACID (4.0 replica set, 4.2 шарды)           | ❌ Нет (атомарен INSERT одного блока)                 | ❌ Нет                          |
+| **JOIN**             | ❌ Нет                                      | ⚠️ Ограничен ($lookup)                         | ✅ SQL JOIN (правая таблица в памяти)                 | ⚠️ Только nested / parent-child |
+| **Full-text search** | ⚠️ Модуль RediSearch (Redis Stack / 8+)     | ⚠️ Базовый $text (полный - Atlas Search)       | ⚠️ Простой (LIKE, токен-индексы)                      | ✅ Лучший                       |
+| **Use cases**        | Cache, sessions, queues, pub/sub            | Flexible data, catalogs, CMS                   | Analytics, logs, metrics                              | Search, autocomplete, logs      |
+| **RAM usage**        | ⚡⚡⚡ Все в RAM                            | ⚡⚡ Кеш WiredTiger (индексы + горячие данные) | ⚡ Данные на диске, но тяжёлые GROUP BY/JOIN едят RAM | ⚡⚡ JVM heap + page cache ОС   |
+| **Размер данных**    | ⚠️ Ограничен RAM (Cluster - суммой RAM нод) | ✅ Терабайты                                   | ✅ Петабайты                                          | ✅ Терабайты                    |
 
 ---
 
@@ -1402,9 +1513,9 @@ php artisan scout:import "App\Models\Post"
 - ✅ Append-only, плохо для UPDATE/DELETE
 
 ### Elasticsearch:
-- ✅ Full-text search, inverted index
+- ✅ Full-text search, inverted index (термин -> список документов; основа Lucene)
 - ✅ Mapping (text vs keyword)
 - ✅ Query DSL (match, term, bool)
-- ✅ Relevance scoring (TF-IDF)
+- ✅ Relevance scoring (BM25, развитие TF-IDF)
 - ✅ Aggregations для аналитики
 - ✅ Laravel Scout интеграция

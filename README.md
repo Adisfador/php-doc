@@ -11,10 +11,10 @@
 - 🔴 [Индексы](databases/indexes.md) - все типы, внутреннее устройство, оптимизация
 - 🔴 [Транзакции и изоляция](databases/transactions.md) - ACID, уровни изоляции, аномалии, блокировки
 - 🔴 [Оптимизация и обслуживание](databases/optimization.md) - VACUUM, ANALYZE, статистика, производительность
+- 🔴 [Нормализация БД](databases/normalization.md) - нормальные формы 1NF-6NF, BCNF, денормализация, практические примеры
 - 🟡 [NoSQL базы данных](databases/nosql.md) - Redis, MongoDB, ClickHouse, Elasticsearch
 - 🟡 [NewSQL базы данных](databases/newsql.md) - CockroachDB, Google Spanner, YugabyteDB - SQL + горизонтальное масштабирование
 - 🟡 [Концепции БД](databases/concepts.md) - OLTP/OLAP, CAP теорема, репликация, шардирование
-- 🔴 [Нормализация БД](databases/normalization.md) - нормальные формы 1NF-6NF, BCNF, денормализация, практические примеры
 - 📚 [Обучающие ресурсы](databases/resources.md) - курсы, видео, книги по БД
 
 ---
